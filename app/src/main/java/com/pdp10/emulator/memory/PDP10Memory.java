@@ -10,7 +10,7 @@ package com.pdp10.emulator.memory;
 public class PDP10Memory {
 
     public static final int MEM_SIZE = 256 * 1024; // 256K words
-    public static final long WORD_MASK = 0x_FFFFF_FFFFL; // 36 bits
+    public static final long WORD_MASK = 0xFFFFFFFFFL; // 36 bits
 
     private long[] core;
     private boolean[] dirty; // for memory change tracking
@@ -175,4 +175,4 @@ public class PDP10Memory {
         }
         return false;
     }
-                  }
+}

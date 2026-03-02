@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PDP-10 Emulator</string>
+    <string name="terminal_tab">Terminal</string>
+    <string name="editor_tab">Editor</string>
+    <string name="debug_tab">Debug</string>
+</resources>

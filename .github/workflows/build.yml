@@ -208,8 +208,22 @@ jobs:
           echo "📦 Release: $TAG → $VERSION_NAME ($VERSION_CODE)"
 
       # Подпись APK через keystore из GitHub Secrets
+      # secrets.* нельзя использовать в if: — проверяем через env-переменную
+      - name: 🔍 Check keystore availability
+        id: keystore_check
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✅ Keystore secret найден — будет подписан Release APK"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "⚠️  KEYSTORE_BASE64 не задан — APK будет unsigned (см. SECRETS_SETUP.md)"
+          fi
+
       - name: 🔐 Decode Keystore
-        if: secrets.KEYSTORE_BASE64 != ''
+        if: steps.keystore_check.outputs.available == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
@@ -217,7 +231,7 @@ jobs:
           echo "✅ Keystore decoded"
 
       - name: 📝 Create signing config
-        if: secrets.KEYSTORE_BASE64 != ''
+        if: steps.keystore_check.outputs.available == 'true'
         run: |
           cat >> app/build.gradle << 'EOF'
           android.signingConfigs.release {
@@ -349,4 +363,3 @@ jobs:
           echo "**Триггер:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> APK доступен во вкладке **Actions → Artifacts** выше ☝️" >> $GITHUB_STEP_SUMMARY
-          

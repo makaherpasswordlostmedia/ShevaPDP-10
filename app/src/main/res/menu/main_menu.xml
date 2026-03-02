@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/menu_run"
+        android:title="▶ Run"
+        android:icon="@android:drawable/ic_media_play"
+        app:showAsAction="ifRoom"/>
+
+    <item
+        android:id="@+id/menu_step"
+        android:title="⏭ Step"
+        app:showAsAction="ifRoom"/>
+
+    <item
+        android:id="@+id/menu_stop"
+        android:title="■ Stop"
+        app:showAsAction="ifRoom"/>
+
+    <item
+        android:id="@+id/menu_assemble"
+        android:title="⚙ Assemble"
+        app:showAsAction="never"/>
+
+    <item
+        android:id="@+id/menu_reset"
+        android:title="⟳ Reset"
+        app:showAsAction="never"/>
+
+    <item
+        android:id="@+id/submenu_programs"
+        android:title="Load Program"
+        app:showAsAction="never">
+        <menu>
+            <item android:id="@+id/menu_load_hello"   android:title="Hello World"/>
+            <item android:id="@+id/menu_load_fib"     android:title="Fibonacci"/>
+            <item android:id="@+id/menu_load_counter" android:title="Counter Loop"/>
+        </menu>
+    </item>
+
+</menu>

@@ -4,127 +4,86 @@ import com.pdp10.emulator.memory.PDP10Memory;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * PDP-10 CPU Emulator
- * Implements KA10/KI10 instruction set architecture
- * 
- * Architecture:
- * - 36-bit word size
- * - 18-bit addressing (256K words)
- * - 16 accumulators (AC0-AC15), part of memory page 0
- * - Program Counter (PC) - 18 bits
- * - Flags register
+ * PDP-10 CPU Emulator — KA10/KI10 instruction set
+ *
+ * 36-bit word, 18-bit addressing, 256K words, 16 accumulators.
+ * Ones-complement arithmetic.
  */
 public class PDP10CPU {
 
-    // =========================================================================
-    // PDP-10 Word size and masks
-    // =========================================================================
-    public static final long WORD_MASK      = 0x_FFFFF_FFFFF L; // 36 bits
-    public static final long HALF_MASK      = 0x3FFFFL;          // 18 bits
-    public static final long SIGN_BIT       = 0x_80000_00000L;   // Bit 0 (MSB)
-    public static final long MAX_POS        = 0x_3FFFF_FFFFL;
-    public static final long MAX_NEG        = 0x_80000_00000L;
-    public static final long ONES_COMP_NEG1 = 0x_FFFFF_FFFFL;   // -0 in ones complement
-    public static final long LEFT_HALF_MASK = 0x_FFFFE_00000L;   // Left 18 bits
-    public static final long RIGHT_HALF_MASK= 0x_0000_3FFFFL;    // Right 18 bits
+    // ── Constants ─────────────────────────────────────────────────────────────
+    // NOTE: Java forbids underscore immediately after 0x prefix.
+    // All hex literals are written without leading underscore.
+    public static final long WORD_MASK       = 0xFFFFFFFFFL;   // 36 bits
+    public static final long HALF_MASK       = 0x3FFFFL;        // 18 bits
+    public static final long SIGN_BIT        = 0x800000000L;    // Bit 35 (MSB)
+    public static final long MAX_POS         = 0x3FFFFFFFFL;
+    public static final long ONES_NEG_ZERO   = 0xFFFFFFFFFL;   // -0 in ones-complement
+    public static final long LEFT_HALF_MASK  = 0xFFFFC0000L;   // bits 35-18
+    public static final long RIGHT_HALF_MASK = 0x000003FFFFL;  // bits 17-0
 
-    // =========================================================================
-    // Registers
-    // =========================================================================
-    private long[] AC = new long[16];       // Accumulators 0-15
-    private int PC = 0;                      // Program Counter (18-bit)
-    private long FLAGS = 0;                  // Processor flags
+    // ── Flags ─────────────────────────────────────────────────────────────────
+    public static final long FLAG_OV   = (1L << 35);
+    public static final long FLAG_CY0  = (1L << 34);
+    public static final long FLAG_CY1  = (1L << 33);
+    public static final long FLAG_FPU  = (1L << 32);
+    public static final long FLAG_TR1  = (1L << 31);
+    public static final long FLAG_TR2  = (1L << 30);
+    public static final long FLAG_USER = (1L << 27);
 
-    // =========================================================================
-    // Flags bits (in left half of PC word)
-    // =========================================================================
-    public static final long FLAG_OV   = (1L << 35); // Overflow
-    public static final long FLAG_CY0  = (1L << 34); // Carry 0
-    public static final long FLAG_CY1  = (1L << 33); // Carry 1
-    public static final long FLAG_FPU  = (1L << 32); // Floating overflow
-    public static final long FLAG_TR1  = (1L << 31); // Trap 1
-    public static final long FLAG_TR2  = (1L << 30); // Trap 2
-    public static final long FLAG_AFI  = (1L << 29); // Arithmetic flag
-    public static final long FLAG_PUB  = (1L << 28); // Public mode
-    public static final long FLAG_USER = (1L << 27); // User mode
-    public static final long FLAG_UIO  = (1L << 26); // User I/O
-    public static final long FLAG_IOT  = (1L << 25); // I/O trap
-    public static final long FLAG_PCHI = (1L << 24); // PC high
-    public static final long FLAG_INT  = (1L << 23); // Interrupt inhibit
+    // ── Registers ─────────────────────────────────────────────────────────────
+    private final long[] AC = new long[16];
+    private int  PC    = 0200;   // conventional start
+    private long FLAGS = 0;
 
-    // =========================================================================
-    // Memory subsystem
-    // =========================================================================
-    private PDP10Memory memory;
+    // ── Subsystems ────────────────────────────────────────────────────────────
+    private final PDP10Memory memory;
+    private final IOHandler   io;
 
-    // =========================================================================
-    // I/O subsystem callbacks
-    // =========================================================================
+    private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean halted  = new AtomicBoolean(false);
+    private volatile long instructionCount = 0;
+    private volatile int  lastOpcode = 0;
+    private String haltReason = "";
+
+    private final long[] opStats = new long[512];
+
+    // ── I/O callback ──────────────────────────────────────────────────────────
     public interface IOHandler {
         void writeChar(char c);
-        int readChar();   // Returns -1 if no char available
+        int  readChar();          // -1 if nothing available
         void halt(String reason);
         void interrupt(int level);
     }
 
-    private IOHandler ioHandler;
-
-    // =========================================================================
-    // CPU state
-    // =========================================================================
-    private AtomicBoolean running = new AtomicBoolean(false);
-    private AtomicBoolean halted  = new AtomicBoolean(false);
-    private volatile long instructionCount = 0;
-    private volatile int lastOpcode = 0;
-    private String haltReason = "";
-
-    // Instruction stats
-    private long[] opStats = new long[512]; // per-opcode execution count
-
-    public PDP10CPU(PDP10Memory memory, IOHandler ioHandler) {
-        this.memory    = memory;
-        this.ioHandler = ioHandler;
+    public PDP10CPU(PDP10Memory memory, IOHandler io) {
+        this.memory = memory;
+        this.io     = io;
         reset();
     }
 
     // =========================================================================
-    // CPU Control
+    // Public control API
     // =========================================================================
 
     public void reset() {
         for (int i = 0; i < 16; i++) AC[i] = 0;
-        PC     = 0200; // Conventional start address
-        FLAGS  = 0;
+        PC    = 0200;
+        FLAGS = 0;
         halted.set(false);
         running.set(false);
         instructionCount = 0;
     }
 
-    public void setPC(int address) {
-        PC = address & 0x3FFFF;
-    }
-
-    public int getPC() { return PC; }
-
-    public void setAC(int n, long value) {
-        AC[n & 0xF] = value & WORD_MASK;
-        memory.write(n & 0xF, AC[n & 0xF]); // ACs are also memory 0-17
-    }
-
-    public long getAC(int n) {
-        return AC[n & 0xF];
-    }
-
-    public long getFlags() { return FLAGS; }
-
-    public boolean isHalted() { return halted.get(); }
-    public boolean isRunning() { return running.get(); }
+    public void setPC(int address) { PC = address & 0x3FFFF; }
+    public int  getPC()            { return PC; }
+    public long getFlags()         { return FLAGS; }
+    public boolean isHalted()      { return halted.get(); }
+    public boolean isRunning()     { return running.get(); }
     public long getInstructionCount() { return instructionCount; }
-    public String getHaltReason() { return haltReason; }
+    public String getHaltReason()  { return haltReason; }
 
-    // =========================================================================
-    // Main execution loop
-    // =========================================================================
+    public long[] getACs() { return AC.clone(); }
 
     public void run() {
         running.set(true);
@@ -141,12 +100,11 @@ public class PDP10CPU {
 
     public void step() {
         if (halted.get()) return;
-
         try {
-            long instruction = memory.read(PC);
+            long instr = memory.read(PC);
             int savedPC = PC;
             PC = (PC + 1) & 0x3FFFF;
-            executeInstruction(instruction, savedPC);
+            execute(instr);
             instructionCount++;
         } catch (Exception e) {
             halt("CPU exception: " + e.getMessage());
@@ -157,483 +115,372 @@ public class PDP10CPU {
         halted.set(true);
         running.set(false);
         haltReason = reason;
-        if (ioHandler != null) ioHandler.halt(reason);
+        if (io != null) io.halt(reason);
     }
 
     // =========================================================================
-    // Instruction Decoding
+    // Instruction field extraction
     // =========================================================================
 
-    // Instruction format: [op:9][AC:4][I:1][X:4][Y:18]
-    private static int opcode(long w)  { return (int)((w >> 27) & 0777); }
-    private static int acField(long w) { return (int)((w >> 23) & 017);  }
-    private static int iField(long w)  { return (int)((w >> 22) & 01);   }
-    private static int xField(long w)  { return (int)((w >> 18) & 017);  }
-    private static int yField(long w)  { return (int)(w & 0777777);      }
+    private static int opcode(long w) { return (int)((w >> 27) & 0x1FF); }
+    private static int acF(long w)    { return (int)((w >> 23) & 0xF);   }
+    private static int iF(long w)     { return (int)((w >> 22) & 0x1);   }
+    private static int xF(long w)     { return (int)((w >> 18) & 0xF);   }
+    private static int yF(long w)     { return (int)(w & 0x3FFFF);       }
 
-    /**
-     * Calculate effective address with indexing and indirection
-     */
-    private int effectiveAddress(long instruction) {
-        int y = yField(instruction);
-        int x = xField(instruction);
-        int i = iField(instruction);
-
-        int ea = y;
-        if (x != 0) ea = (ea + (int)(AC[x] & HALF_MASK)) & 0x3FFFF;
-
-        // Handle indirection (follow chain)
+    /** Compute effective address, following indirection chain. */
+    private int ea(long instr) {
+        int y = yF(instr);
+        int x = xF(instr);
+        int i = iF(instr);
+        int addr = y;
+        if (x != 0) addr = (addr + (int)(AC[x] & HALF_MASK)) & 0x3FFFF;
         int depth = 0;
-        while (i != 0 && depth < 64) {
-            long ind = memory.read(ea);
-            i  = iField(ind);
-            x  = xField(ind);
-            ea = yField(ind);
-            if (x != 0) ea = (ea + (int)(AC[x] & HALF_MASK)) & 0x3FFFF;
-            depth++;
+        while (i != 0 && depth++ < 64) {
+            long ind = memory.read(addr);
+            i    = iF(ind);
+            x    = xF(ind);
+            addr = yF(ind);
+            if (x != 0) addr = (addr + (int)(AC[x] & HALF_MASK)) & 0x3FFFF;
         }
-        return ea;
+        return addr;
     }
 
     // =========================================================================
     // Arithmetic helpers
     // =========================================================================
 
-    /** Add two 36-bit ones-complement numbers, set flags */
     private long add(long a, long b) {
         long result = (a + b) & WORD_MASK;
-
-        // Carry detection
-        boolean aCy = (a & SIGN_BIT) != 0;
-        boolean bCy = (b & SIGN_BIT) != 0;
-        boolean rCy = (result & SIGN_BIT) != 0;
-
-        // Overflow: both inputs same sign, result different sign
-        if ((!aCy && !bCy && rCy) || (aCy && bCy && !rCy)) {
-            FLAGS |= FLAG_OV | FLAG_CY0;
-        }
-
-        // End-around carry for ones-complement
-        long sum = (a & ~SIGN_BIT) + (b & ~SIGN_BIT);
-        if ((sum & SIGN_BIT) != 0) {
-            // Carry into sign bit
-            FLAGS |= FLAG_CY0 | FLAG_CY1;
-        }
-
+        boolean aNeg = (a & SIGN_BIT) != 0;
+        boolean bNeg = (b & SIGN_BIT) != 0;
+        boolean rNeg = (result & SIGN_BIT) != 0;
+        if ((!aNeg && !bNeg && rNeg) || (aNeg && bNeg && !rNeg)) FLAGS |= FLAG_OV;
         return result;
     }
 
-    private long negate(long a) {
-        return (~a) & WORD_MASK; // ones complement negation
+    private long neg(long a)         { return (~a) & WORD_MASK; }
+    private long sub(long a, long b) { return add(a, neg(b)); }
+
+    private boolean isNeg(long w)  { return (w & SIGN_BIT) != 0; }
+    private boolean isZero(long w) { return w == 0 || w == ONES_NEG_ZERO; }
+
+    private long signed(long w) {
+        w &= WORD_MASK;
+        return isNeg(w) ? w - (SIGN_BIT << 1) : w;
     }
 
-    private long sub(long a, long b) {
-        return add(a, negate(b));
+    private long swap(long w) {
+        long l = (w >> 18) & HALF_MASK;
+        long r = w & HALF_MASK;
+        return ((r << 18) | l) & WORD_MASK;
     }
 
-    private boolean isNegative(long w) {
-        return (w & SIGN_BIT) != 0;
+    // ─── Shifts ───────────────────────────────────────────────────────────────
+
+    private long ash(long v, int cnt) {
+        long sign = v & SIGN_BIT;
+        long mag  = v & ~SIGN_BIT & WORD_MASK;
+        if (cnt > 0)  mag = (mag << cnt) & ~SIGN_BIT & WORD_MASK;
+        else if (cnt < 0) mag >>= -cnt;
+        return sign | mag;
     }
 
-    private boolean isZero(long w) {
-        return w == 0 || w == ONES_COMP_NEG1; // both 0 and -0 count
+    private long lsh(long v, int cnt) {
+        if (cnt > 0) return (v << cnt)   & WORD_MASK;
+        if (cnt < 0) return (v >>> -cnt) & WORD_MASK;
+        return v;
     }
 
-    /** Sign extend 18-bit half-word to 36-bit */
-    private long signExtend18(int v) {
-        if ((v & 0x20000) != 0) return (long)v | 0xFFFFFC0000L; // sign bit set
-        return (long)v;
+    private long rot(long v, int cnt) {
+        cnt = ((cnt % 36) + 36) % 36;
+        return ((v << cnt) | (v >>> (36 - cnt))) & WORD_MASK;
+    }
+
+    private int parseCnt(int ea) {
+        int c = ea & 0x1FF;
+        return c >= 0x100 ? c - 0x200 : c;
+    }
+
+    // ─── Integer multiply / divide ────────────────────────────────────────────
+
+    private long imul(long a, long b) {
+        long r = (signed(a) * signed(b));
+        if (r > 0x3FFFFFFFFL || r < -0x400000000L) FLAGS |= FLAG_OV;
+        return r & WORD_MASK;
+    }
+
+    private void idiv(int ac, long a, long b) {
+        if (isZero(b)) { FLAGS |= FLAG_OV; return; }
+        long q = signed(a) / signed(b);
+        long r = signed(a) % signed(b);
+        AC[ac] = q & WORD_MASK;
+        if (ac + 1 < 16) AC[ac + 1] = r & WORD_MASK;
+    }
+
+    // ─── Jump condition test ──────────────────────────────────────────────────
+
+    private boolean testCond(int cond, long val) {
+        switch (cond & 7) {
+            case 0: return false;
+            case 1: return isNeg(val);
+            case 2: return isNeg(val) || isZero(val);
+            case 3: return isZero(val);
+            case 4: return !isZero(val);
+            case 5: return !isNeg(val) || isZero(val);
+            case 6: return !isNeg(val) && !isZero(val);
+            case 7: return true;
+            default: return false;
+        }
     }
 
     // =========================================================================
-    // Main instruction dispatcher
+    // Main dispatcher
     // =========================================================================
 
-    private void executeInstruction(long w, int pc) {
+    private void execute(long w) {
         int op = opcode(w);
-        int ac = acField(w);
+        int ac = acF(w);
         lastOpcode = op;
         opStats[op]++;
 
+        // Decode address only once
+        final int addr;
+
         switch (op) {
 
-        // =====================================================================
-        // 0xx - Logical and bit operations
-        // =====================================================================
-
-        case 0000: // LUUO - Unimplemented user operation (trap)
-        case 0001: case 0002: case 0003: case 0004:
-        case 0005: case 0006: case 0007:
-            luuoTrap(op, ac, w);
+        // ── LUUO 000-077 ──────────────────────────────────────────────────────
+        default:
+            // Unimplemented User UO — store and vector
+            memory.write(040, w);
+            memory.write(041, (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
+            PC = 042;
             break;
 
-        // =====================================================================
-        // 1xx - Move instructions
-        // =====================================================================
+        // ── MOVE group 200-217 ────────────────────────────────────────────────
+        case 0200: AC[ac] = memory.read(ea(w));                    break; // MOVE
+        case 0201: AC[ac] = ea(w) & HALF_MASK;                     break; // MOVEI
+        case 0202: memory.write(ea(w), AC[ac]);                    break; // MOVEM
+        case 0203: { long v=memory.read(ea(w)); if(ac!=0)AC[ac]=v; memory.write(ea(w),v); break; } // MOVES
+        case 0204: AC[ac] = swap(memory.read(ea(w)));              break; // MOVS
+        case 0205: AC[ac] = ((long)(ea(w)&HALF_MASK))<<18;        break; // MOVSI
+        case 0206: memory.write(ea(w), swap(AC[ac]));              break; // MOVSM
+        case 0207: { long v=swap(memory.read(ea(w))); if(ac!=0)AC[ac]=v; memory.write(ea(w),v); break; } // MOVSS
+        case 0210: AC[ac] = neg(memory.read(ea(w)));               break; // MOVN
+        case 0211: AC[ac] = neg(ea(w) & HALF_MASK);               break; // MOVNI
+        case 0212: memory.write(ea(w), neg(AC[ac]));               break; // MOVNM
+        case 0213: { long v=neg(memory.read(ea(w))); if(ac!=0)AC[ac]=v; memory.write(ea(w),v); break; } // MOVNS
+        case 0214: { long v=memory.read(ea(w)); AC[ac]=isNeg(v)?neg(v):v; break; } // MOVM
+        case 0215: { long v=ea(w)&HALF_MASK;   AC[ac]=isNeg(v)?neg(v):v; break; } // MOVMI
+        case 0216: { long v=AC[ac]; memory.write(ea(w), isNeg(v)?neg(v):v); break; } // MOVMM
+        case 0217: { long v=memory.read(ea(w)); v=isNeg(v)?neg(v):v; if(ac!=0)AC[ac]=v; memory.write(ea(w),v); break; } // MOVMS
 
-        case 0200: { // MOVE  - Move to AC
-            int ea = effectiveAddress(w);
-            AC[ac] = memory.read(ea);
-            break;
-        }
-        case 0201: { // MOVEI - Move Immediate
-            int ea = effectiveAddress(w); // EA is the value (no memory access)
-            AC[ac] = ea & HALF_MASK;
-            break;
-        }
-        case 0202: { // MOVEM - Move to Memory
-            int ea = effectiveAddress(w);
-            memory.write(ea, AC[ac]);
-            break;
-        }
-        case 0203: { // MOVES - Move to Both (self)
-            int ea = effectiveAddress(w);
-            long val = memory.read(ea);
-            if (ac != 0) AC[ac] = val;
-            memory.write(ea, val);
-            break;
-        }
-        case 0204: { // MOVS  - Move Swapped
-            int ea = effectiveAddress(w);
-            long val = memory.read(ea);
-            AC[ac] = swap(val);
-            break;
-        }
-        case 0205: { // MOVSI - Move Swapped Immediate
-            int ea = effectiveAddress(w);
-            AC[ac] = ((long)ea << 18) & WORD_MASK;
-            break;
-        }
-        case 0206: { // MOVSM - Move Swapped to Memory
-            int ea = effectiveAddress(w);
-            memory.write(ea, swap(AC[ac]));
-            break;
-        }
-        case 0207: { // MOVSS - Move Swapped to Self
-            int ea = effectiveAddress(w);
-            long val = swap(memory.read(ea));
-            if (ac != 0) AC[ac] = val;
-            memory.write(ea, val);
-            break;
-        }
-        case 0210: { // MOVN  - Move Negated
-            int ea = effectiveAddress(w);
-            AC[ac] = negate(memory.read(ea));
-            break;
-        }
-        case 0211: { // MOVNI - Move Negated Immediate
-            int ea = effectiveAddress(w);
-            AC[ac] = negate(ea & HALF_MASK);
-            break;
-        }
-        case 0212: { // MOVNM - Move Negated to Memory
-            int ea = effectiveAddress(w);
-            memory.write(ea, negate(AC[ac]));
-            break;
-        }
-        case 0213: { // MOVNS - Move Negated to Self
-            int ea = effectiveAddress(w);
-            long val = negate(memory.read(ea));
-            if (ac != 0) AC[ac] = val;
-            memory.write(ea, val);
-            break;
-        }
-        case 0214: { // MOVM  - Move Magnitude
-            int ea = effectiveAddress(w);
-            long val = memory.read(ea);
-            AC[ac] = isNegative(val) ? negate(val) : val;
-            break;
-        }
-        case 0215: { // MOVMI - Move Magnitude Immediate
-            int ea = effectiveAddress(w);
-            AC[ac] = ea & HALF_MASK; // immediate is always positive
-            break;
-        }
-        case 0216: { // MOVMM - Move Magnitude to Memory
-            int ea = effectiveAddress(w);
-            long val = AC[ac];
-            memory.write(ea, isNegative(val) ? negate(val) : val);
-            break;
-        }
-        case 0217: { // MOVMS - Move Magnitude to Self
-            int ea = effectiveAddress(w);
-            long val = memory.read(ea);
-            val = isNegative(val) ? negate(val) : val;
-            if (ac != 0) AC[ac] = val;
-            memory.write(ea, val);
-            break;
-        }
+        // ── Integer arithmetic 220-237 ────────────────────────────────────────
+        case 0220: AC[ac] = imul(AC[ac], memory.read(ea(w)));      break; // IMUL
+        case 0221: AC[ac] = imul(AC[ac], ea(w)&HALF_MASK);         break; // IMULI
+        case 0222: memory.write(ea(w), imul(AC[ac], memory.read(ea(w)))); break; // IMULM
+        case 0223: { long r=imul(AC[ac],memory.read(ea(w))); AC[ac]=r; memory.write(ea(w),r); break; } // IMULB
+        case 0230: idiv(ac, AC[ac], memory.read(ea(w)));            break; // IDIV
+        case 0231: idiv(ac, AC[ac], ea(w)&HALF_MASK);               break; // IDIVI
 
-        // =====================================================================
-        // Integer Arithmetic
-        // =====================================================================
-
-        case 0220: { // IMUL - Integer Multiply
-            int ea = effectiveAddress(w);
-            long m = memory.read(ea);
-            AC[ac] = imul(AC[ac], m);
-            break;
-        }
-        case 0221: { // IMULI - Integer Multiply Immediate
-            int ea = effectiveAddress(w);
-            AC[ac] = imul(AC[ac], ea & HALF_MASK);
-            break;
-        }
-        case 0222: { // IMULM - Integer Multiply to Memory
-            int ea = effectiveAddress(w);
-            long result = imul(AC[ac], memory.read(ea));
-            memory.write(ea, result);
-            break;
-        }
-        case 0223: { // IMULB - Integer Multiply Both
-            int ea = effectiveAddress(w);
-            long result = imul(AC[ac], memory.read(ea));
-            AC[ac] = result;
-            memory.write(ea, result);
-            break;
-        }
-        case 0224: { // MUL  - Multiply (double word result)
-            int ea = effectiveAddress(w);
-            long[] res = mul(AC[ac], memory.read(ea));
-            AC[ac] = res[0];
-            if (ac + 1 < 16) AC[ac + 1] = res[1];
-            break;
-        }
-        case 0225: { // MULI - Multiply Immediate
-            int ea = effectiveAddress(w);
-            long[] res = mul(AC[ac], ea & HALF_MASK);
-            AC[ac] = res[0];
-            if (ac + 1 < 16) AC[ac + 1] = res[1];
-            break;
-        }
-        case 0230: { // IDIV - Integer Divide
-            int ea = effectiveAddress(w);
-            idiv(ac, AC[ac], memory.read(ea));
-            break;
-        }
-        case 0231: { // IDIVI - Integer Divide Immediate
-            int ea = effectiveAddress(w);
-            idiv(ac, AC[ac], ea & HALF_MASK);
-            break;
-        }
-        case 0234: { // DIV  - Divide (double word dividend)
-            int ea = effectiveAddress(w);
-            long hi = AC[ac];
-            long lo = (ac + 1 < 16) ? AC[ac + 1] : 0;
-            divDouble(ac, hi, lo, memory.read(ea));
-            break;
-        }
-        case 0235: { // DIVI
-            int ea = effectiveAddress(w);
-            long hi = AC[ac];
-            long lo = (ac + 1 < 16) ? AC[ac + 1] : 0;
-            divDouble(ac, hi, lo, ea & HALF_MASK);
-            break;
-        }
-
-        // =====================================================================
-        // Shift and rotate
-        // =====================================================================
-
-        case 0240: { // ASH  - Arithmetic Shift
-            int ea = effectiveAddress(w);
-            int cnt = (ea & 0777);
-            if (cnt >= 0400) cnt = cnt - 0777 - 1; // signed
-            AC[ac] = ash(AC[ac], cnt);
-            break;
-        }
-        case 0241: { // ROT  - Rotate
-            int ea = effectiveAddress(w);
-            int cnt = (ea & 0777);
-            if (cnt >= 0400) cnt = cnt - 0777 - 1;
-            AC[ac] = rot(AC[ac], cnt);
-            break;
-        }
-        case 0242: { // LSH  - Logical Shift
-            int ea = effectiveAddress(w);
-            int cnt = (ea & 0777);
-            if (cnt >= 0400) cnt = cnt - 0777 - 1;
-            AC[ac] = lsh(AC[ac], cnt);
-            break;
-        }
-        case 0243: { // JFFO - Jump if Find First One
-            int ea = effectiveAddress(w);
+        // ── Shift group 240-247 ───────────────────────────────────────────────
+        case 0240: AC[ac] = ash(AC[ac], parseCnt(ea(w)));           break; // ASH
+        case 0241: AC[ac] = rot(AC[ac], parseCnt(ea(w)));           break; // ROT
+        case 0242: AC[ac] = lsh(AC[ac], parseCnt(ea(w)));           break; // LSH
+        case 0243: {                                                        // JFFO
+            int e = ea(w);
             if (AC[ac] != 0) {
-                int pos = 0;
-                long tmp = AC[ac];
+                int pos = 0; long tmp = AC[ac];
                 while ((tmp & SIGN_BIT) == 0) { pos++; tmp <<= 1; }
-                if (ac + 1 < 16) AC[ac + 1] = pos;
-                PC = ea;
+                if (ac+1 < 16) AC[ac+1] = pos;
+                PC = e;
             }
             break;
         }
-        case 0244: { // ASHC - Arithmetic Shift Combined
-            int ea = effectiveAddress(w);
-            int cnt = (ea & 0777);
-            if (cnt >= 0400) cnt = cnt - 0777 - 1;
-            ashc(ac, cnt);
+        case 0244: {                                                        // ASHC
+            int cnt = parseCnt(ea(w));
+            long hi = AC[ac]; long lo = (ac+1<16)?AC[ac+1]:0;
+            long sign = hi & SIGN_BIT;
+            long combined = ((hi & ~SIGN_BIT) << 35) | lo;
+            if (cnt > 0) combined <<= cnt; else combined >>= -cnt;
+            AC[ac] = sign | ((combined >> 35) & ~SIGN_BIT & WORD_MASK);
+            if (ac+1 < 16) AC[ac+1] = combined & WORD_MASK;
             break;
         }
-        case 0245: { // ROTC - Rotate Combined
-            int ea = effectiveAddress(w);
-            int cnt = (ea & 0777);
-            if (cnt >= 0400) cnt = cnt - 0777 - 1;
-            rotc(ac, cnt);
+        case 0245: {                                                        // ROTC
+            int cnt = parseCnt(ea(w));
+            long hi = AC[ac]; long lo = (ac+1<16)?AC[ac+1]:0;
+            long c72 = (hi << 36) | lo;
+            cnt = ((cnt % 72) + 72) % 72;
+            c72 = (c72 << cnt) | (c72 >>> (72-cnt));
+            AC[ac] = (c72 >>> 36) & WORD_MASK;
+            if (ac+1 < 16) AC[ac+1] = c72 & WORD_MASK;
             break;
         }
-        case 0246: { // LSHC - Logical Shift Combined
-            int ea = effectiveAddress(w);
-            int cnt = (ea & 0777);
-            if (cnt >= 0400) cnt = cnt - 0777 - 1;
-            lshc(ac, cnt);
-            break;
-        }
-
-        // =====================================================================
-        // Add / Subtract
-        // =====================================================================
-
-        case 0270: { // ADD
-            int ea = effectiveAddress(w);
-            AC[ac] = add(AC[ac], memory.read(ea));
-            break;
-        }
-        case 0271: { // ADDI - Add Immediate
-            int ea = effectiveAddress(w);
-            AC[ac] = add(AC[ac], ea & HALF_MASK);
-            break;
-        }
-        case 0272: { // ADDM - Add to Memory
-            int ea = effectiveAddress(w);
-            long result = add(AC[ac], memory.read(ea));
-            memory.write(ea, result);
-            break;
-        }
-        case 0273: { // ADDB - Add Both
-            int ea = effectiveAddress(w);
-            long result = add(AC[ac], memory.read(ea));
-            AC[ac] = result;
-            memory.write(ea, result);
-            break;
-        }
-        case 0274: { // SUB
-            int ea = effectiveAddress(w);
-            AC[ac] = sub(AC[ac], memory.read(ea));
-            break;
-        }
-        case 0275: { // SUBI
-            int ea = effectiveAddress(w);
-            AC[ac] = sub(AC[ac], ea & HALF_MASK);
-            break;
-        }
-        case 0276: { // SUBM
-            int ea = effectiveAddress(w);
-            long result = sub(memory.read(ea), AC[ac]);
-            memory.write(ea, result);
-            break;
-        }
-        case 0277: { // SUBB
-            int ea = effectiveAddress(w);
-            long result = sub(AC[ac], memory.read(ea));
-            AC[ac] = result;
-            memory.write(ea, result);
+        case 0246: {                                                        // LSHC
+            int cnt = parseCnt(ea(w));
+            long hi = AC[ac]; long lo = (ac+1<16)?AC[ac+1]:0;
+            long c72 = (hi << 36) | lo;
+            if (cnt > 0) c72 <<= cnt; else c72 >>>= -cnt;
+            AC[ac] = (c72 >>> 36) & WORD_MASK;
+            if (ac+1 < 16) AC[ac+1] = c72 & WORD_MASK;
             break;
         }
 
-        // =====================================================================
-        // Comparison / Skip instructions (CAI, CAM variants)
-        // =====================================================================
-
-        case 0300: skipIfCondition(ac, 0, effectiveAddress(w), false, false, false); break; // CAIL
-        case 0301: AC[ac] = (effectiveAddress(w) & HALF_MASK); break; // CAIE ?
-        // Full CAI/CAM family (0300-0317)
-        case 0302: case 0303: case 0304: case 0305:
-        case 0306: case 0307: case 0310: case 0311:
-        case 0312: case 0313: case 0314: case 0315:
-        case 0316: case 0317:
-            caiCam(op, ac, w);
+        // ── Jump/call group 254-267 ───────────────────────────────────────────
+        case 0254: {                                                        // JRST
+            int e = ea(w);
+            if ((ac & 010) != 0) FLAGS = memory.read(PC-1) & LEFT_HALF_MASK;
+            PC = e;
             break;
-
-        // =====================================================================
-        // Jump instructions
-        // =====================================================================
-
-        case 0320: { // JUMP  - Jump if AC condition
-        case 0321: case 0322: case 0323:
-        case 0324: case 0325: case 0326: case 0327:
-            jumpCondition(op - 0320, ac, effectiveAddress(w));
+        }
+        case 0255: {                                                        // JFCL
+            int e = ea(w);
+            long bits = (long)ac << 32;
+            if ((FLAGS & bits) != 0) { FLAGS &= ~bits; PC = e; }
+            break;
+        }
+        case 0256: execute(memory.read(ea(w)));                    break;  // XCT
+        case 0260: {                                                        // PUSHJ
+            int e = ea(w);
+            AC[ac] = add(AC[ac], 0x000001000001L);
+            memory.write((int)(AC[ac] & HALF_MASK), (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
+            PC = e;
+            break;
+        }
+        case 0261: {                                                        // PUSH
+            int e = ea(w);
+            AC[ac] = add(AC[ac], 0x000001000001L);
+            memory.write((int)(AC[ac] & HALF_MASK), memory.read(e));
+            break;
+        }
+        case 0262: {                                                        // POP
+            int e = ea(w);
+            memory.write(e, memory.read((int)(AC[ac] & HALF_MASK)));
+            AC[ac] = sub(AC[ac], 0x000001000001L);
+            break;
+        }
+        case 0263: {                                                        // POPJ
+            int src = (int)(AC[ac] & HALF_MASK);
+            PC = (int)(memory.read(src) & HALF_MASK);
+            AC[ac] = sub(AC[ac], 0x000001000001L);
+            break;
+        }
+        case 0264: {                                                        // JSR
+            int e = ea(w);
+            memory.write(e, (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
+            PC = (e + 1) & 0x3FFFF;
+            break;
+        }
+        case 0265: {                                                        // JSP
+            int e = ea(w);
+            AC[ac] = (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK);
+            PC = e;
+            break;
+        }
+        case 0266: {                                                        // JSA
+            int e = ea(w);
+            memory.write(e, AC[ac]);
+            AC[ac] = ((long)e << 18) | (PC & HALF_MASK);
+            PC = (e + 1) & 0x3FFFF;
+            break;
+        }
+        case 0267: {                                                        // JRA
+            int e = ea(w);
+            AC[ac] = memory.read((int)((AC[ac] >> 18) & HALF_MASK));
+            PC = e;
             break;
         }
 
+        // ── ADD / SUB 270-277 ─────────────────────────────────────────────────
+        case 0270: AC[ac] = add(AC[ac], memory.read(ea(w)));       break;  // ADD
+        case 0271: AC[ac] = add(AC[ac], ea(w) & HALF_MASK);        break;  // ADDI
+        case 0272: { int e=ea(w); memory.write(e, add(AC[ac], memory.read(e))); break; } // ADDM
+        case 0273: { int e=ea(w); long r=add(AC[ac],memory.read(e)); AC[ac]=r; memory.write(e,r); break; } // ADDB
+        case 0274: AC[ac] = sub(AC[ac], memory.read(ea(w)));       break;  // SUB
+        case 0275: AC[ac] = sub(AC[ac], ea(w) & HALF_MASK);        break;  // SUBI
+        case 0276: { int e=ea(w); memory.write(e, sub(memory.read(e), AC[ac])); break; } // SUBM
+        case 0277: { int e=ea(w); long r=sub(AC[ac],memory.read(e)); AC[ac]=r; memory.write(e,r); break; } // SUBB
+
+        // ── Compare/Skip 300-337 ──────────────────────────────────────────────
+        // CAI family (immediate compare, 300-307)
+        case 0300: case 0301: case 0302: case 0303:
+        case 0304: case 0305: case 0306: case 0307: {
+            long diff = sub(AC[ac], ea(w) & HALF_MASK);
+            if (testCond(op & 7, diff)) PC = (PC + 1) & 0x3FFFF;
+            break;
+        }
+        // CAM family (memory compare, 310-317)
+        case 0310: case 0311: case 0312: case 0313:
+        case 0314: case 0315: case 0316: case 0317: {
+            long diff = sub(AC[ac], memory.read(ea(w)));
+            if (testCond(op & 7, diff)) PC = (PC + 1) & 0x3FFFF;
+            break;
+        }
+        // JUMP family (320-327) — jump if AC matches condition
+        case 0320: case 0321: case 0322: case 0323:
+        case 0324: case 0325: case 0326: case 0327: {
+            int e = ea(w);
+            if (testCond(op & 7, AC[ac])) PC = e;
+            break;
+        }
+        // SKIP family (330-337)
         case 0330: case 0331: case 0332: case 0333:
-        case 0334: case 0335: case 0336: case 0337: { // SKIP
-            skipCondition(op - 0330, ac, w);
+        case 0334: case 0335: case 0336: case 0337: {
+            int e = ea(w); long val = memory.read(e);
+            if (ac != 0) AC[ac] = val;
+            if (testCond(op & 7, val)) PC = (PC + 1) & 0x3FFFF;
             break;
         }
 
+        // ── AOJ/AOS/SOJ/SOS 340-377 ──────────────────────────────────────────
         case 0340: case 0341: case 0342: case 0343:
-        case 0344: case 0345: case 0346: case 0347: { // AOJ - Add 1, Jump
-            int ea = effectiveAddress(w);
-            AC[ac] = add(AC[ac], 1);
-            if (testJumpCondition(op - 0340, AC[ac])) PC = ea;
+        case 0344: case 0345: case 0346: case 0347: {                // AOJ
+            int e = ea(w); AC[ac] = add(AC[ac], 1);
+            if (testCond(op & 7, AC[ac])) PC = e;
             break;
         }
-
         case 0350: case 0351: case 0352: case 0353:
-        case 0354: case 0355: case 0356: case 0357: { // AOS - Add 1, Skip
-            int ea = effectiveAddress(w);
-            long val = add(memory.read(ea), 1);
-            memory.write(ea, val);
-            if (ac != 0) AC[ac] = val;
-            if (testJumpCondition(op - 0350, val)) PC = (PC + 1) & 0x3FFFF;
+        case 0354: case 0355: case 0356: case 0357: {                // AOS
+            int e = ea(w); long v = add(memory.read(e), 1);
+            memory.write(e, v); if (ac != 0) AC[ac] = v;
+            if (testCond(op & 7, v)) PC = (PC + 1) & 0x3FFFF;
             break;
         }
-
         case 0360: case 0361: case 0362: case 0363:
-        case 0364: case 0365: case 0366: case 0367: { // SOJ - Subtract 1, Jump
-            int ea = effectiveAddress(w);
-            AC[ac] = sub(AC[ac], 1);
-            if (testJumpCondition(op - 0360, AC[ac])) PC = ea;
+        case 0364: case 0365: case 0366: case 0367: {                // SOJ
+            int e = ea(w); AC[ac] = sub(AC[ac], 1);
+            if (testCond(op & 7, AC[ac])) PC = e;
             break;
         }
-
         case 0370: case 0371: case 0372: case 0373:
-        case 0374: case 0375: case 0376: case 0377: { // SOS - Subtract 1, Skip
-            int ea = effectiveAddress(w);
-            long val = sub(memory.read(ea), 1);
-            memory.write(ea, val);
-            if (ac != 0) AC[ac] = val;
-            if (testJumpCondition(op - 0370, val)) PC = (PC + 1) & 0x3FFFF;
+        case 0374: case 0375: case 0376: case 0377: {                // SOS
+            int e = ea(w); long v = sub(memory.read(e), 1);
+            memory.write(e, v); if (ac != 0) AC[ac] = v;
+            if (testCond(op & 7, v)) PC = (PC + 1) & 0x3FFFF;
             break;
         }
 
-        // =====================================================================
-        // Boolean operations
-        // =====================================================================
+        // ── Boolean 400-477 ───────────────────────────────────────────────────
+        case 0400: case 0401: case 0402: case 0403:  // SETZ
+        case 0404: case 0405: case 0406: case 0407:  // AND
+        case 0410: case 0411: case 0412: case 0413:  // ANDCA
+        case 0414: case 0415: case 0416: case 0417:  // SETM
+        case 0420: case 0421: case 0422: case 0423:  // ANDCM
+        case 0424: case 0425: case 0426: case 0427:  // SETA
+        case 0430: case 0431: case 0432: case 0433:  // XOR
+        case 0434: case 0435: case 0436: case 0437:  // OR
+        case 0440: case 0441: case 0442: case 0443:  // ANDCB
+        case 0444: case 0445: case 0446: case 0447:  // EQV
+        case 0450: case 0451: case 0452: case 0453:  // SETCA
+        case 0454: case 0455: case 0456: case 0457:  // ORCA
+        case 0460: case 0461: case 0462: case 0463:  // SETCM
+        case 0464: case 0465: case 0466: case 0467:  // ORCM
+        case 0470: case 0471: case 0472: case 0473:  // ORCB
+        case 0474: case 0475: case 0476: case 0477:  // SETO
+            boolOp(op, ac, w); break;
 
-        case 0400: case 0401: case 0402: case 0403: // SETZ
-        case 0404: case 0405: case 0406: case 0407: // AND
-        case 0410: case 0411: case 0412: case 0413: // ANDCA
-        case 0414: case 0415: case 0416: case 0417: // SETM
-        case 0420: case 0421: case 0422: case 0423: // ANDCM
-        case 0424: case 0425: case 0426: case 0427: // SETA
-        case 0430: case 0431: case 0432: case 0433: // XOR
-        case 0434: case 0435: case 0436: case 0437: // OR
-        case 0440: case 0441: case 0442: case 0443: // ANDCB
-        case 0444: case 0445: case 0446: case 0447: // EQV
-        case 0450: case 0451: case 0452: case 0453: // SETCA
-        case 0454: case 0455: case 0456: case 0457: // ORCA
-        case 0460: case 0461: case 0462: case 0463: // SETCM
-        case 0464: case 0465: case 0466: case 0467: // ORCM
-        case 0470: case 0471: case 0472: case 0473: // ORCB
-        case 0474: case 0475: case 0476: case 0477: // SETO
-            boolOp(op, ac, w);
-            break;
-
-        // =====================================================================
-        // Half-word instructions
-        // =====================================================================
-
+        // ── Half-word 500-577 ─────────────────────────────────────────────────
         case 0500: case 0501: case 0502: case 0503:
         case 0504: case 0505: case 0506: case 0507:
         case 0510: case 0511: case 0512: case 0513:
@@ -650,13 +497,9 @@ public class PDP10CPU {
         case 0564: case 0565: case 0566: case 0567:
         case 0570: case 0571: case 0572: case 0573:
         case 0574: case 0575: case 0576: case 0577:
-            halfWordOp(op, ac, w);
-            break;
+            halfOp(op, ac, w); break;
 
-        // =====================================================================
-        // Test and modify instructions (TDN, TSN, TDZ, TSZ, etc.)
-        // =====================================================================
-
+        // ── Test 600-677 ──────────────────────────────────────────────────────
         case 0600: case 0601: case 0602: case 0603:
         case 0604: case 0605: case 0606: case 0607:
         case 0610: case 0611: case 0612: case 0613:
@@ -673,13 +516,9 @@ public class PDP10CPU {
         case 0664: case 0665: case 0666: case 0667:
         case 0670: case 0671: case 0672: case 0673:
         case 0674: case 0675: case 0676: case 0677:
-            testOp(op, ac, w);
-            break;
+            testOp(op, ac, w); break;
 
-        // =====================================================================
-        // I/O and control instructions
-        // =====================================================================
-
+        // ── I/O 700-777 ───────────────────────────────────────────────────────
         case 0700: case 0701: case 0702: case 0703:
         case 0704: case 0705: case 0706: case 0707:
         case 0710: case 0711: case 0712: case 0713:
@@ -696,518 +535,210 @@ public class PDP10CPU {
         case 0764: case 0765: case 0766: case 0767:
         case 0770: case 0771: case 0772: case 0773:
         case 0774: case 0775: case 0776: case 0777:
-            ioInstruction(op, ac, w);
-            break;
+            ioOp(op, ac, w); break;
 
-        // =====================================================================
-        // Jump family
-        // =====================================================================
-
-        case 0254: { // JRST - Jump and Restore
-            int ea = effectiveAddress(w);
-            if ((ac & 010) != 0) { // Restore flags
-                FLAGS = memory.read(PC - 1); // simplified
-            }
-            PC = ea;
-            break;
-        }
-        case 0255: { // JFCL - Jump on Flag and Clear
-            int ea = effectiveAddress(w);
-            long flagBits = (long)ac << 32;
-            if ((FLAGS & flagBits) != 0) {
-                FLAGS &= ~flagBits;
-                PC = ea;
-            }
-            break;
-        }
-        case 0256: { // XCT - Execute
-            int ea = effectiveAddress(w);
-            long xctInstr = memory.read(ea);
-            executeInstruction(xctInstr, ea);
-            break;
-        }
-        case 0260: case 0261: case 0262: case 0263: { // PUSHJ / PUSH
-            if (op == 0261) { // PUSH
-                int ea = effectiveAddress(w);
-                AC[ac] = add(AC[ac], 0x000001000001L); // increment both halves
-                int dest = (int)(AC[ac] & HALF_MASK);
-                memory.write(dest, memory.read(ea));
-            } else if (op == 0260) { // PUSHJ
-                int ea = effectiveAddress(w);
-                AC[ac] = add(AC[ac], 0x000001000001L);
-                int dest = (int)(AC[ac] & HALF_MASK);
-                memory.write(dest, (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
-                PC = ea;
-            }
-            break;
-        }
-        case 0262: case 0263: { // POP / POPJ
-            if (op == 0262) { // POP
-                int ea = effectiveAddress(w);
-                int src = (int)(AC[ac] & HALF_MASK);
-                memory.write(ea, memory.read(src));
-                AC[ac] = sub(AC[ac], 0x000001000001L);
-            } else { // POPJ
-                int src = (int)(AC[ac] & HALF_MASK);
-                long retWord = memory.read(src);
-                AC[ac] = sub(AC[ac], 0x000001000001L);
-                PC = (int)(retWord & HALF_MASK);
-            }
-            break;
-        }
-        case 0264: { // JSR - Jump to Subroutine
-            int ea = effectiveAddress(w);
-            memory.write(ea, (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
-            PC = (ea + 1) & 0x3FFFF;
-            break;
-        }
-        case 0265: { // JSP - Jump and Save PC
-            int ea = effectiveAddress(w);
-            AC[ac] = (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK);
-            PC = ea;
-            break;
-        }
-        case 0266: { // JSA - Jump and Save AC
-            int ea = effectiveAddress(w);
-            memory.write(ea, AC[ac]);
-            AC[ac] = ((long)ea << 18) | (PC & HALF_MASK);
-            PC = (ea + 1) & 0x3FFFF;
-            break;
-        }
-        case 0267: { // JRA - Jump Restore AC
-            int ea = effectiveAddress(w);
-            AC[ac] = memory.read((int)((AC[ac] >> 18) & HALF_MASK));
-            PC = ea;
-            break;
-        }
-
-        // Unimplemented -> unimplemented user operation
-        default:
-            luuoTrap(op, ac, w);
-        }
+        } // end switch
     }
 
     // =========================================================================
-    // Helper instruction implementations
+    // Boolean operations (400-477)
     // =========================================================================
-
-    private long swap(long w) {
-        long left  = (w >> 18) & HALF_MASK;
-        long right = w & HALF_MASK;
-        return (right << 18) | left;
-    }
-
-    private long imul(long a, long b) {
-        // 36-bit integer multiply, result truncated to 36 bits
-        long sa = toSigned36(a);
-        long sb = toSigned36(b);
-        long result = sa * sb;
-        if (result > MAX_POS || result < -MAX_POS - 1) {
-            FLAGS |= FLAG_OV;
-        }
-        return fromSigned36(result);
-    }
-
-    private long[] mul(long a, long b) {
-        long sa = toSigned36(a);
-        long sb = toSigned36(b);
-        long result = sa * sb;
-        // Split into two 36-bit words
-        long hi = (result >> 35) & WORD_MASK;
-        long lo = result & WORD_MASK;
-        return new long[]{hi, lo};
-    }
-
-    private void idiv(int ac, long a, long b) {
-        if (isZero(b)) {
-            FLAGS |= FLAG_OV;
-            return;
-        }
-        long sa = toSigned36(a);
-        long sb = toSigned36(b);
-        long q = sa / sb;
-        long r = sa % sb;
-        AC[ac] = fromSigned36(q);
-        if (ac + 1 < 16) AC[ac + 1] = fromSigned36(r);
-    }
-
-    private void divDouble(int ac, long hi, long lo, long divisor) {
-        if (isZero(divisor)) {
-            FLAGS |= FLAG_OV;
-            return;
-        }
-        // 72-bit / 36-bit division
-        long dividend = (toSigned36(hi) << 35) | (lo & WORD_MASK);
-        long div = toSigned36(divisor);
-        long q = dividend / div;
-        long r = dividend % div;
-        AC[ac] = fromSigned36(q);
-        if (ac + 1 < 16) AC[ac + 1] = fromSigned36(r);
-    }
-
-    private long toSigned36(long w) {
-        w &= WORD_MASK;
-        if ((w & SIGN_BIT) != 0) return w - (SIGN_BIT << 1);
-        return w;
-    }
-
-    private long fromSigned36(long v) {
-        return v & WORD_MASK;
-    }
-
-    private long ash(long v, int cnt) {
-        long sign = v & SIGN_BIT;
-        v &= ~SIGN_BIT;
-        if (cnt > 0) {
-            v = (v << cnt);
-            // Check for overflow: any bits shifted past bit 1 differ from sign
-        } else if (cnt < 0) {
-            v = (v >> (-cnt));
-        }
-        return sign | (v & ~SIGN_BIT & WORD_MASK);
-    }
-
-    private long lsh(long v, int cnt) {
-        if (cnt > 0) return (v << cnt) & WORD_MASK;
-        if (cnt < 0) return (v >>> (-cnt)) & WORD_MASK;
-        return v;
-    }
-
-    private long rot(long v, int cnt) {
-        cnt = ((cnt % 36) + 36) % 36;
-        return ((v << cnt) | (v >>> (36 - cnt))) & WORD_MASK;
-    }
-
-    private void ashc(int ac, int cnt) {
-        long lo = (ac + 1 < 16) ? AC[ac + 1] : 0;
-        long hi = AC[ac];
-        long combined = (hi << 35) | lo;
-        long sign = hi & SIGN_BIT;
-        combined &= ~(SIGN_BIT << 35);
-        if (cnt > 0) combined <<= cnt;
-        else combined >>= (-cnt);
-        AC[ac] = sign | ((combined >> 35) & ~SIGN_BIT & WORD_MASK);
-        if (ac + 1 < 16) AC[ac + 1] = combined & WORD_MASK;
-    }
-
-    private void rotc(int ac, int cnt) {
-        long lo = (ac + 1 < 16) ? AC[ac + 1] : 0;
-        long hi = AC[ac];
-        long combined = (hi << 36) | lo;
-        cnt = ((cnt % 72) + 72) % 72;
-        combined = ((combined << cnt) | (combined >>> (72 - cnt)));
-        AC[ac] = (combined >>> 36) & WORD_MASK;
-        if (ac + 1 < 16) AC[ac + 1] = combined & WORD_MASK;
-    }
-
-    private void lshc(int ac, int cnt) {
-        long lo = (ac + 1 < 16) ? AC[ac + 1] : 0;
-        long hi = AC[ac];
-        long combined = (hi << 36) | lo;
-        if (cnt > 0) combined <<= cnt;
-        else combined >>>= (-cnt);
-        AC[ac] = (combined >>> 36) & WORD_MASK;
-        if (ac + 1 < 16) AC[ac + 1] = combined & WORD_MASK;
-    }
 
     private void boolOp(int op, int ac, long w) {
-        int ea = effectiveAddress(w);
-        long mem = memory.read(ea);
+        int  e   = ea(w);
+        long mem = memory.read(e);
         long a   = AC[ac];
-
-        // Decode function (bits 5-6 of opcode)
-        int func = (op >> 2) & 017;
+        int  fn  = (op >> 2) & 0xF;
         long result;
-        switch (func) {
-            case 0000: result = 0; break;         // SETZ
-            case 0001: result = a & mem; break;   // AND
-            case 0002: result = ~a & mem; break;  // ANDCA
-            case 0003: result = mem; break;        // SETM
-            case 0004: result = a & ~mem; break;  // ANDCM
-            case 0005: result = a; break;          // SETA
-            case 0006: result = a ^ mem; break;   // XOR
-            case 0007: result = a | mem; break;   // OR
-            case 0010: result = ~(a | mem); break;// ANDCB
-            case 0011: result = ~(a ^ mem); break;// EQV
-            case 0012: result = ~a; break;         // SETCA
-            case 0013: result = ~a | mem; break;  // ORCA
-            case 0014: result = ~mem; break;       // SETCM
-            case 0015: result = a | ~mem; break;  // ORCM
-            case 0016: result = ~(a & mem); break;// ORCB
-            default:   result = WORD_MASK; break; // SETO
+        switch (fn) {
+            case 0:  result = 0;               break; // SETZ
+            case 1:  result = a & mem;         break; // AND
+            case 2:  result = ~a & mem;        break; // ANDCA
+            case 3:  result = mem;             break; // SETM
+            case 4:  result = a & ~mem;        break; // ANDCM
+            case 5:  result = a;               break; // SETA
+            case 6:  result = a ^ mem;         break; // XOR
+            case 7:  result = a | mem;         break; // OR
+            case 8:  result = ~(a | mem);      break; // ANDCB
+            case 9:  result = ~(a ^ mem);      break; // EQV
+            case 10: result = ~a;              break; // SETCA
+            case 11: result = ~a | mem;        break; // ORCA
+            case 12: result = ~mem;            break; // SETCM
+            case 13: result = a | ~mem;        break; // ORCM
+            case 14: result = ~(a & mem);      break; // ORCB
+            default: result = WORD_MASK;       break; // SETO
         }
         result &= WORD_MASK;
-
-        // Destination (bits 0-1 of opcode)
         int dest = op & 3;
         switch (dest) {
-            case 0: // AC
-                AC[ac] = result; break;
-            case 1: // Immediate (same as AC for most)
-                AC[ac] = result; break;
-            case 2: // Memory
-                memory.write(ea, result); break;
-            case 3: // Both
-                AC[ac] = result;
-                memory.write(ea, result); break;
+            case 0: case 1: AC[ac] = result;   break;
+            case 2: memory.write(e, result);   break;
+            case 3: AC[ac] = result; memory.write(e, result); break;
         }
     }
 
-    private void halfWordOp(int op, int ac, long w) {
-        int ea = effectiveAddress(w);
-        long src = memory.read(ea);
+    // =========================================================================
+    // Half-word operations (500-577)
+    // =========================================================================
+
+    private void halfOp(int op, int ac, long w) {
+        int  e   = ea(w);
+        long src = memory.read(e);
         long dst = AC[ac];
+        // Bit 8 of opcode: 0=R-to-L, 1=L-to-R (relative to source half)
+        // sub-family determined by bits 3-5
+        int sub = (op - 0500) >> 2;          // 0-15
+        boolean srcLeft = (sub & 4) == 0;    // 0=R src, 4=L src
+        boolean dstLeft = (sub & 8) == 0;    // 0=R dst, 8=L dst
 
-        boolean sourceLeft  = (op & 040) == 0;
-        boolean destLeft    = (op & 020) == 0;
-        boolean fillMode    = (op & 06) >> 1; // 0=preserve, 1=zero, 2=ones, 3=extend
+        long half = srcLeft ? (src >> 18) & HALF_MASK : src & HALF_MASK;
 
-        long half = sourceLeft ? (src >> 18) & HALF_MASK : src & HALF_MASK;
-
-        // Fill
+        // Fill mode from bits 1-2
+        int fm = (op & 6) >> 1;
         long fill;
-        int fm = (op & 06) >> 1;
         switch (fm) {
-            case 0: fill = destLeft ? (dst >> 18) : (dst & HALF_MASK); break;
-            case 1: fill = 0; break;
+            case 0: fill = dstLeft ? (dst >> 18) & HALF_MASK : dst & HALF_MASK; break;
+            case 1: fill = 0;       break;
             case 2: fill = HALF_MASK; break;
-            default: fill = (half & 0x20000) != 0 ? HALF_MASK : 0; break;
+            default: fill = (half & 0x20000L) != 0 ? HALF_MASK : 0; break;
         }
 
-        long result;
-        if (destLeft) {
-            result = (half << 18) | (fill);
-        } else {
-            result = (fill << 18) | half;
-        }
-        result &= WORD_MASK;
+        long result = dstLeft
+            ? ((half << 18) | fill) & WORD_MASK
+            : ((fill << 18) | half) & WORD_MASK;
 
-        int destType = op & 1;
-        if (destType == 0) {
+        if ((op & 1) == 0) {
             AC[ac] = result;
         } else {
             if (ac != 0) AC[ac] = result;
-            memory.write(ea, result);
+            memory.write(e, result);
         }
     }
 
+    // =========================================================================
+    // Test operations (600-677)
+    // =========================================================================
+
     private void testOp(int op, int ac, long w) {
-        int ea = effectiveAddress(w);
-        long mask = memory.read(ea);
+        int  e    = ea(w);
+        long mask = memory.read(e);
         long val  = AC[ac];
 
-        // Source: 0=direct, 1=swapped
         boolean swapped = (op & 020) != 0;
-        long testVal = swapped ? swap(mask) : mask;
+        long testMask   = swapped ? swap(mask) : mask;
 
-        // Condition: 0=never, 1=equal, 2=notequal, 3=always
+        // Modify field (bits 3-4)
+        int modify = ((op - 0600) >> 3) & 3;
+        switch (modify) {
+            case 1: AC[ac] = (val & ~testMask) & WORD_MASK; break;
+            case 2: AC[ac] = (val ^ testMask)  & WORD_MASK; break;
+            case 3: AC[ac] = (val | testMask)  & WORD_MASK; break;
+            default: break;
+        }
+
+        // Skip condition (bits 1-2)
         int cond = (op >> 1) & 3;
         boolean skip = false;
         switch (cond) {
-            case 0: break;                           // TDN/TSN - never skip
-            case 1: skip = (val & testVal) == 0; break; // TDZN/TSZN
-            case 2: skip = (val & testVal) != 0; break; // TDN/TSN (skip never)
-            case 3: skip = true; break;              // TDA/TSA
-        }
-
-        // Modify: 0=none, 1=AND(complement), 2=XOR(ones), 3=OR(ones)
-        int modify = ((op - 0600) >> 3) & 3;
-        switch (modify) {
             case 0: break;
-            case 1: AC[ac] = val & ~testVal & WORD_MASK; break;
-            case 2: AC[ac] = val ^ testVal; break;
-            case 3: AC[ac] = val | testVal; break;
+            case 1: skip = (val & testMask) == 0;  break;
+            case 2: skip = (val & testMask) != 0;  break;
+            case 3: skip = true;                    break;
         }
-
         if (skip) PC = (PC + 1) & 0x3FFFF;
     }
 
-    private void caiCam(int op, int ac, long w) {
-        int ea = effectiveAddress(w);
-        long a = AC[ac];
-        long b;
-        boolean isImm = (op & 010) == 0;
-        if (isImm) {
-            b = ea & HALF_MASK;
-        } else {
-            b = memory.read(ea);
-        }
-
-        // Compare condition (bits 0-2 of opcode within family)
-        int cond = op & 7;
-        long diff = sub(a, b);
-        boolean skip = testCondition(cond, diff);
-        if (skip) PC = (PC + 1) & 0x3FFFF;
-    }
-
-    private void jumpCondition(int cond, int ac, int ea) {
-        if (testJumpCondition(cond, AC[ac])) PC = ea;
-    }
-
-    private void skipCondition(int cond, int ac, long w) {
-        int ea = effectiveAddress(w);
-        long val = memory.read(ea);
-        if (ac != 0) AC[ac] = val;
-        if (testJumpCondition(cond, val)) PC = (PC + 1) & 0x3FFFF;
-    }
-
-    private boolean testJumpCondition(int cond, long val) {
-        switch (cond) {
-            case 0: return false;                    // never
-            case 1: return isNegative(val);          // L (less than 0)
-            case 2: return isNegative(val)||isZero(val); // LE
-            case 3: return isZero(val);              // E (equal zero)
-            case 4: return !isZero(val);             // NE
-            case 5: return !isNegative(val)&&!isZero(val); // GE
-            case 6: return !isNegative(val);         // G (greater or equal 0)
-            case 7: return true;                     // always
-            default: return false;
-        }
-    }
-
-    private boolean testCondition(int cond, long diff) {
-        // Skip conditions for CAI/CAM: L, LE, E, GE, G, NE
-        switch (cond & 7) {
-            case 0: return false;
-            case 1: return isNegative(diff);
-            case 2: return isNegative(diff) || isZero(diff);
-            case 3: return isZero(diff);
-            case 4: return !isNegative(diff) && !isZero(diff);
-            case 5: return !isNegative(diff);
-            case 6: return !isZero(diff);
-            case 7: return true;
-            default: return false;
-        }
-    }
-
-    private void luuoTrap(int op, int ac, long w) {
-        // Store trap info and vector to interrupt handler (simplified)
-        memory.write(040, (long)op << 27 | (long)ac << 23 | (w & 0x3FFFF));
-        memory.write(041, (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
-        PC = 042;
-    }
-
     // =========================================================================
-    // I/O instruction dispatch
+    // I/O operations (700-777) — minimal CTY console emulation
     // =========================================================================
 
-    private void ioInstruction(int op, int ac, long w) {
-        // I/O instructions: bits 0-8 = device + function
-        // Common TOPS-10/20 monitor calls via UUO
-        int ea = effectiveAddress(w);
-        int device = (op >> 3) & 077; // bits 3-8
-        int func   = op & 07;          // bits 0-2
-
-        // Handle common console I/O devices
-        switch (device) {
-            case 0: // CTY (console TTY)
-                handleConsoleIO(func, ac, ea);
-                break;
-            case 01: // PTR (paper tape reader)
-            case 02: // PTP (paper tape punch)
-            default:
-                // Silently ignore unknown I/O for now
-                break;
-        }
-    }
-
-    private void handleConsoleIO(int func, int ac, int ea) {
-        switch (func) {
-            case 0: // CONO - Condition Out (set status)
-                break;
-            case 1: // CONI - Condition In (read status)
-                AC[ac] = 0xC0L; // ready bits set
-                break;
-            case 2: // DATAO - Output data
-                if (ioHandler != null) {
-                    long data = AC[ac];
-                    // Output low 7 bits as ASCII
-                    char c = (char)(data & 0x7F);
-                    if (c != 0) ioHandler.writeChar(c);
-                }
-                break;
-            case 3: // DATAI - Input data
-                if (ioHandler != null) {
-                    int ch = ioHandler.readChar();
-                    if (ch >= 0) {
-                        AC[ac] = ch & 0x7F;
-                    } else {
-                        AC[ac] = 0; // no input available
-                    }
-                }
-                break;
+    private void ioOp(int op, int ac, long w) {
+        int e      = ea(w);
+        int device = (op >> 3) & 077;
+        int func   = op & 07;
+        if (device == 0) {  // CTY
+            switch (func) {
+                case 1: AC[ac] = 0xC0L; break;          // CONI — ready
+                case 2: if (io != null) {                // DATAO — output
+                    char c = (char)(AC[ac] & 0x7F);
+                    if (c != 0) io.writeChar(c);
+                } break;
+                case 3: if (io != null) {                // DATAI — input
+                    int ch = io.readChar();
+                    AC[ac] = ch >= 0 ? ch & 0x7FL : 0;
+                } break;
+                default: break;
+            }
         }
     }
 
     // =========================================================================
-    // Debug / Inspection API
+    // Disassembler
     // =========================================================================
-
-    public long[] getACs() { return AC.clone(); }
-
-    public String dumpRegisters() {
-        StringBuilder sb = new StringBuilder();
-        sb.append(String.format("PC: %06o  FLAGS: %012o\n", PC, FLAGS));
-        sb.append(String.format("Insn: #%d  LastOp: %03o\n\n", instructionCount, lastOpcode));
-        for (int i = 0; i < 16; i++) {
-            sb.append(String.format("AC%02d: %012o  (%011d)\n", i, AC[i], toSigned36(AC[i])));
-        }
-        return sb.toString();
-    }
 
     public String disassemble(int address) {
-        long w = memory.read(address);
-        return disassembleWord(address, w);
+        return disassembleWord(address, memory.read(address));
     }
 
     public static String disassembleWord(int addr, long w) {
-        int op = opcode(w);
-        int ac = acField(w);
-        int i  = iField(w);
-        int x  = xField(w);
-        int y  = yField(w);
-
-        String mnemonic = getMnemonic(op);
+        int op = (int)((w >> 27) & 0x1FF);
+        int ac = (int)((w >> 23) & 0xF);
+        int i  = (int)((w >> 22) & 0x1);
+        int x  = (int)((w >> 18) & 0xF);
+        int y  = (int)(w & 0x3FFFF);
+        String mn = getMnemonic(op);
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format("%06o: %012o  %-8s", addr, w, mnemonic));
+        sb.append(String.format("%06o: %012o  %-8s", addr, w, mn));
         if (ac != 0) sb.append(String.format("%d,", ac));
-        if (i != 0) sb.append("@");
+        if (i  != 0) sb.append("@");
         sb.append(String.format("%06o", y));
-        if (x != 0) sb.append(String.format("(%d)", x));
+        if (x  != 0) sb.append(String.format("(%d)", x));
         return sb.toString();
     }
 
     public static String getMnemonic(int op) {
-        String[] mnemonics = new String[512];
-        // Fill known mnemonics
-        mnemonics[0200]="MOVE";  mnemonics[0201]="MOVEI"; mnemonics[0202]="MOVEM"; mnemonics[0203]="MOVES";
-        mnemonics[0204]="MOVS";  mnemonics[0205]="MOVSI"; mnemonics[0206]="MOVSM"; mnemonics[0207]="MOVSS";
-        mnemonics[0210]="MOVN";  mnemonics[0211]="MOVNI"; mnemonics[0212]="MOVNM"; mnemonics[0213]="MOVNS";
-        mnemonics[0214]="MOVM";  mnemonics[0215]="MOVMI"; mnemonics[0216]="MOVMM"; mnemonics[0217]="MOVMS";
-        mnemonics[0220]="IMUL";  mnemonics[0221]="IMULI"; mnemonics[0222]="IMULM"; mnemonics[0223]="IMULB";
-        mnemonics[0224]="MUL";   mnemonics[0225]="MULI";  mnemonics[0226]="MULM";  mnemonics[0227]="MULB";
-        mnemonics[0230]="IDIV";  mnemonics[0231]="IDIVI"; mnemonics[0232]="IDIVM"; mnemonics[0233]="IDIVB";
-        mnemonics[0234]="DIV";   mnemonics[0235]="DIVI";  mnemonics[0236]="DIVM";  mnemonics[0237]="DIVB";
-        mnemonics[0240]="ASH";   mnemonics[0241]="ROT";   mnemonics[0242]="LSH";   mnemonics[0243]="JFFO";
-        mnemonics[0244]="ASHC";  mnemonics[0245]="ROTC";  mnemonics[0246]="LSHC";
-        mnemonics[0254]="JRST";  mnemonics[0255]="JFCL";  mnemonics[0256]="XCT";
-        mnemonics[0260]="PUSHJ"; mnemonics[0261]="PUSH";  mnemonics[0262]="POP";   mnemonics[0263]="POPJ";
-        mnemonics[0264]="JSR";   mnemonics[0265]="JSP";   mnemonics[0266]="JSA";   mnemonics[0267]="JRA";
-        mnemonics[0270]="ADD";   mnemonics[0271]="ADDI";  mnemonics[0272]="ADDM";  mnemonics[0273]="ADDB";
-        mnemonics[0274]="SUB";   mnemonics[0275]="SUBI";  mnemonics[0276]="SUBM";  mnemonics[0277]="SUBB";
-        mnemonics[0300]="CAIL";  mnemonics[0301]="CAIE";  mnemonics[0302]="CAIL";  mnemonics[0303]="CAILE";
-        mnemonics[0304]="CAIA";  mnemonics[0305]="CAIGE"; mnemonics[0306]="CAIG";  mnemonics[0307]="CAIN";
-        mnemonics[0320]="JUMP";  mnemonics[0321]="JUMPL"; mnemonics[0322]="JUMPLE";mnemonics[0323]="JUMPE";
-        mnemonics[0324]="JUMPN"; mnemonics[0325]="JUMPGE";mnemonics[0326]="JUMPG"; mnemonics[0327]="JUMPA";
-        mnemonics[0330]="SKIP";  mnemonics[0331]="SKIPL"; mnemonics[0332]="SKIPLE";mnemonics[0333]="SKIPE";
-        mnemonics[0334]="SKIPN"; mnemonics[0335]="SKIPGE";mnemonics[0336]="SKIPG"; mnemonics[0337]="SKIPA";
-        mnemonics[0400]="SETZ";  mnemonics[0404]="AND";   mnemonics[0410]="ANDCA"; mnemonics[0414]="SETM";
-        mnemonics[0420]="ANDCM"; mnemonics[0424]="SETA";  mnemonics[0430]="XOR";   mnemonics[0434]="OR";
-        mnemonics[0440]="ANDCB"; mnemonics[0444]="EQV";   mnemonics[0450]="SETCA"; mnemonics[0454]="ORCA";
-        mnemonics[0460]="SETCM"; mnemonics[0464]="ORCM";  mnemonics[0470]="ORCB";  mnemonics[0474]="SETO";
-        String m = (op < 512 && mnemonics[op] != null) ? mnemonics[op] : String.format("???(%03o)", op);
-        return m;
+        switch (op) {
+            case 0200: return "MOVE";  case 0201: return "MOVEI"; case 0202: return "MOVEM"; case 0203: return "MOVES";
+            case 0204: return "MOVS";  case 0205: return "MOVSI"; case 0206: return "MOVSM"; case 0207: return "MOVSS";
+            case 0210: return "MOVN";  case 0211: return "MOVNI"; case 0212: return "MOVNM"; case 0213: return "MOVNS";
+            case 0214: return "MOVM";  case 0215: return "MOVMI"; case 0216: return "MOVMM"; case 0217: return "MOVMS";
+            case 0220: return "IMUL";  case 0221: return "IMULI"; case 0230: return "IDIV";  case 0231: return "IDIVI";
+            case 0240: return "ASH";   case 0241: return "ROT";   case 0242: return "LSH";   case 0243: return "JFFO";
+            case 0244: return "ASHC";  case 0245: return "ROTC";  case 0246: return "LSHC";
+            case 0254: return "JRST";  case 0255: return "JFCL";  case 0256: return "XCT";
+            case 0260: return "PUSHJ"; case 0261: return "PUSH";  case 0262: return "POP";   case 0263: return "POPJ";
+            case 0264: return "JSR";   case 0265: return "JSP";   case 0266: return "JSA";   case 0267: return "JRA";
+            case 0270: return "ADD";   case 0271: return "ADDI";  case 0272: return "ADDM";  case 0273: return "ADDB";
+            case 0274: return "SUB";   case 0275: return "SUBI";  case 0276: return "SUBM";  case 0277: return "SUBB";
+            case 0300: return "CAIL";  case 0301: return "CAIE";  case 0302: return "CAILE"; case 0303: return "CAIA";
+            case 0304: return "CAIGE"; case 0305: return "CAIG";  case 0306: return "CAIN";  case 0307: return "CAIM";
+            case 0310: return "CAML";  case 0311: return "CAME";  case 0312: return "CAMLE"; case 0313: return "CAMA";
+            case 0314: return "CAMGE"; case 0315: return "CAMG";  case 0316: return "CAMN";  case 0317: return "CAM";
+            case 0320: return "JUMP";  case 0321: return "JUMPL"; case 0322: return "JUMPLE";case 0323: return "JUMPE";
+            case 0324: return "JUMPN"; case 0325: return "JUMPGE";case 0326: return "JUMPG"; case 0327: return "JUMPA";
+            case 0330: return "SKIP";  case 0331: return "SKIPL"; case 0332: return "SKIPLE";case 0333: return "SKIPE";
+            case 0334: return "SKIPN"; case 0335: return "SKIPGE";case 0336: return "SKIPG"; case 0337: return "SKIPA";
+            case 0340: return "AOJ";   case 0341: return "AOJL";  case 0346: return "AOJG";  case 0347: return "AOJA";
+            case 0350: return "AOS";   case 0357: return "AOSA";
+            case 0360: return "SOJ";   case 0361: return "SOJL";  case 0366: return "SOJG";  case 0367: return "SOJA";
+            case 0370: return "SOS";   case 0377: return "SOSA";
+            case 0400: return "SETZ";  case 0404: return "AND";   case 0410: return "ANDCA"; case 0414: return "SETM";
+            case 0420: return "ANDCM"; case 0424: return "SETA";  case 0430: return "XOR";   case 0434: return "OR";
+            case 0440: return "ANDCB"; case 0444: return "EQV";   case 0450: return "SETCA"; case 0454: return "ORCA";
+            case 0460: return "SETCM"; case 0464: return "ORCM";  case 0470: return "ORCB";  case 0474: return "SETO";
+            case 0500: return "HLL";   case 0504: return "HRL";   case 0540: return "HRR";   case 0544: return "HLR";
+            default:   return String.format("%03o", op);
+        }
     }
 
     public long[] getOpStats() { return opStats.clone(); }
+
+    public String dumpRegisters() {
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("PC:%06o  FLAGS:%012o  #%d\n", PC, FLAGS, instructionCount));
+        for (int i = 0; i < 16; i++) {
+            sb.append(String.format("AC%02d: %012o  (%d)\n", i, AC[i], signed(AC[i])));
+        }
+        return sb.toString();
+    }
 }

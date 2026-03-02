@@ -16,11 +16,14 @@ on:
         options: [debug, release]
 
 env:
-  JAVA_VERSION:    '17'
-  GRADLE_VERSION:  '8.6'
-  # Android SDK предустановлен на ubuntu-latest именно здесь
-  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-  APK_PATH:        app/build/outputs/apk
+  JAVA_VERSION:   '17'
+  GRADLE_VERSION: '8.7'         # AGP 8.3.2 требует Gradle >= 8.4
+  AGP_VERSION:    '8.3.2'
+  APK_PATH:       app/build/outputs/apk
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ПЕРЕИСПОЛЬЗУЕМЫЙ COMPOSITE ACTION: SDK + Gradle + local.properties
+# ─────────────────────────────────────────────────────────────────────────────
 
 jobs:
 
@@ -43,25 +46,31 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: temurin
 
+      # Устанавливает Android SDK и добавляет sdkmanager в PATH
       - name: 🤖 Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: 📦 Install Android SDK components
+      # Без этого файла AGP не может найти SDK, даже если ANDROID_HOME задан
+      - name: 📄 Create local.properties
         run: |
-          sdkmanager --install \
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "✅ local.properties: sdk.dir=$ANDROID_HOME"
+
+      - name: 📦 Install SDK platform & build-tools
+        run: |
+          sdkmanager \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "platform-tools" \
-            2>&1 | grep -v "^\[=" || true   # убираем шумный progress-bar
+            2>&1 | grep -v "^\[=" || true
 
       - name: 🐘 Setup Gradle ${{ env.GRADLE_VERSION }}
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
-          cache-read-only: false
 
       - name: 🔍 Run Lint
-        run: gradle lint --stacktrace
+        run: gradle lint --info 2>&1 | tail -50
         continue-on-error: true
 
       - name: 📊 Upload Lint Report
@@ -73,7 +82,7 @@ jobs:
           retention-days: 7
 
       - name: 🧪 Run Unit Tests
-        run: gradle testDebugUnitTest --stacktrace
+        run: gradle testDebugUnitTest --info 2>&1 | tail -50
         continue-on-error: true
 
       - name: 📊 Upload Test Results
@@ -106,9 +115,12 @@ jobs:
       - name: 🤖 Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: 📦 Install Android SDK components
+      - name: 📄 Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: 📦 Install SDK platform & build-tools
         run: |
-          sdkmanager --install \
+          sdkmanager \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "platform-tools" \
@@ -126,10 +138,18 @@ jobs:
           VERSION_NAME=$(git describe --tags --always --dirty 2>/dev/null \
                          || echo "dev-${GITHUB_SHA::7}")
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
-          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME"  >> $GITHUB_OUTPUT
           echo "📦 Version: $VERSION_NAME ($VERSION_CODE)"
 
       - name: 🔧 Build Debug APK
+        run: |
+          gradle assembleDebug \
+            -Pandroid.injected.version.code=${{ steps.version.outputs.version_code }} \
+            -Pandroid.injected.version.name=${{ steps.version.outputs.version_name }} \
+            --info 2>&1 | grep -E "(BUILD|FAILED|error:|warning:|> Task|Exception)" | tail -60
+
+      # Второй запуск без фильтра — чтобы реальный exit code прошёл
+      - name: 🔧 Build Debug APK (final)
         run: |
           gradle assembleDebug \
             -Pandroid.injected.version.code=${{ steps.version.outputs.version_code }} \
@@ -178,9 +198,12 @@ jobs:
       - name: 🤖 Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: 📦 Install Android SDK components
+      - name: 📄 Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: 📦 Install SDK platform & build-tools
         run: |
-          sdkmanager --install \
+          sdkmanager \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "platform-tools" \
@@ -200,7 +223,6 @@ jobs:
           echo "tag=$TAG"                   >> $GITHUB_OUTPUT
           echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
-          echo "📦 Release: $TAG → $VERSION_NAME ($VERSION_CODE)"
 
       # secrets.* нельзя в if: — проверяем через env → output
       - name: 🔍 Check keystore availability
@@ -213,16 +235,14 @@ jobs:
             echo "✅ Keystore найден — APK будет подписан"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "⚠️  KEYSTORE_BASE64 не задан — APK unsigned (см. SECRETS_SETUP.md)"
+            echo "⚠️  KEYSTORE_BASE64 не задан — APK unsigned"
           fi
 
       - name: 🔐 Decode Keystore
         if: steps.keystore_check.outputs.available == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > keystore.jks
-          echo "✅ keystore.jks создан"
+        run: echo "$KEYSTORE_BASE64" | base64 --decode > keystore.jks
 
       - name: 📝 Inject signing config
         if: steps.keystore_check.outputs.available == 'true'
@@ -239,9 +259,7 @@ jobs:
                   }
               }
               buildTypes {
-                  release {
-                      signingConfig signingConfigs.release
-                  }
+                  release { signingConfig signingConfigs.release }
               }
           }
           GRADLE_EOF
@@ -298,27 +316,15 @@ jobs:
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           PREV_TAG=$(git describe --tags --abbrev=0 ${TAG}^ 2>/dev/null || echo "")
-
           if [ -n "$PREV_TAG" ]; then
             CHANGES=$(git log ${PREV_TAG}..${TAG} --pretty=format:"- %s" --no-merges)
           else
             CHANGES=$(git log --pretty=format:"- %s" --no-merges -20)
           fi
-
           cat > CHANGELOG.md << EOF
           ## PDP-10 Emulator ${TAG}
-
           ### Изменения
           ${CHANGES}
-
-          ### Об эмуляторе
-          - 🖥️ KA10/KI10 PDP-10 с 36-битной архитектурой
-          - 🧠 256K слов оперативной памяти
-          - ⌨️ Встроенный терминал (зелёный экран)
-          - ⚙️ Ассемблер MACRO-10
-          - 🔍 Дебаггер с дизассемблером
-          - 📱 Требует Android 8.0+
-
           ### Установка
           1. Скачайте APK ниже
           2. Android: Настройки → Безопасность → Разрешить установку из неизвестных источников
@@ -328,10 +334,10 @@ jobs:
       - name: 🎉 Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "PDP-10 Emulator ${{ github.ref_name }}"
+          tag_name:  ${{ github.ref_name }}
+          name:      "PDP-10 Emulator ${{ github.ref_name }}"
           body_path: CHANGELOG.md
-          draft: false
+          draft:     false
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
           files: release/*.apk
         env:
@@ -359,6 +365,4 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Коммит:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Ветка:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Триггер:** \`${{ github.event_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> 💡 APK доступен во вкладке **Actions → Artifacts**" >> $GITHUB_STEP_SUMMARY
+          echo "> 💡 APK во вкладке **Actions → Artifacts**" >> $GITHUB_STEP_SUMMARY

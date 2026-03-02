@@ -16,9 +16,11 @@ on:
         options: [debug, release]
 
 env:
-  JAVA_VERSION: '17'
-  GRADLE_VERSION: '8.6'
-  APK_PATH: app/build/outputs/apk
+  JAVA_VERSION:    '17'
+  GRADLE_VERSION:  '8.6'
+  # Android SDK предустановлен на ubuntu-latest именно здесь
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+  APK_PATH:        app/build/outputs/apk
 
 jobs:
 
@@ -41,8 +43,17 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: temurin
 
-      # gradle/actions/setup-gradle сам скачивает нужную версию Gradle.
-      # gradle-wrapper.jar в репозитории НЕ нужен — это и есть суть фикса.
+      - name: 🤖 Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 📦 Install Android SDK components
+        run: |
+          sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "platform-tools" \
+            2>&1 | grep -v "^\[=" || true   # убираем шумный progress-bar
+
       - name: 🐘 Setup Gradle ${{ env.GRADLE_VERSION }}
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -92,6 +103,17 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: temurin
 
+      - name: 🤖 Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 📦 Install Android SDK components
+        run: |
+          sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "platform-tools" \
+            2>&1 | grep -v "^\[=" || true
+
       - name: 🐘 Setup Gradle ${{ env.GRADLE_VERSION }}
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -101,7 +123,8 @@ jobs:
         id: version
         run: |
           VERSION_CODE=${{ github.run_number }}
-          VERSION_NAME=$(git describe --tags --always --dirty 2>/dev/null || echo "dev-${GITHUB_SHA::7}")
+          VERSION_NAME=$(git describe --tags --always --dirty 2>/dev/null \
+                         || echo "dev-${GITHUB_SHA::7}")
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
           echo "📦 Version: $VERSION_NAME ($VERSION_CODE)"
@@ -152,6 +175,17 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: temurin
 
+      - name: 🤖 Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 📦 Install Android SDK components
+        run: |
+          sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "platform-tools" \
+            2>&1 | grep -v "^\[=" || true
+
       - name: 🐘 Setup Gradle ${{ env.GRADLE_VERSION }}
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -179,7 +213,7 @@ jobs:
             echo "✅ Keystore найден — APK будет подписан"
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "⚠️  KEYSTORE_BASE64 не задан — APK будет unsigned (см. SECRETS_SETUP.md)"
+            echo "⚠️  KEYSTORE_BASE64 не задан — APK unsigned (см. SECRETS_SETUP.md)"
           fi
 
       - name: 🔐 Decode Keystore
@@ -190,7 +224,7 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 --decode > keystore.jks
           echo "✅ keystore.jks создан"
 
-      - name: 📝 Inject signing config into build.gradle
+      - name: 📝 Inject signing config
         if: steps.keystore_check.outputs.available == 'true'
         run: |
           cat >> app/build.gradle << 'GRADLE_EOF'

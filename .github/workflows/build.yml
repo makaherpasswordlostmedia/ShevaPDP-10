@@ -70,7 +70,7 @@ jobs:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
       - name: 🔍 Run Lint
-        run: gradle lint --info 2>&1 | tail -50
+        run: gradle lint --stacktrace
         continue-on-error: true
 
       - name: 📊 Upload Lint Report
@@ -82,7 +82,7 @@ jobs:
           retention-days: 7
 
       - name: 🧪 Run Unit Tests
-        run: gradle testDebugUnitTest --info 2>&1 | tail -50
+        run: gradle testDebugUnitTest --stacktrace
         continue-on-error: true
 
       - name: 📊 Upload Test Results
@@ -142,14 +142,6 @@ jobs:
           echo "📦 Version: $VERSION_NAME ($VERSION_CODE)"
 
       - name: 🔧 Build Debug APK
-        run: |
-          gradle assembleDebug \
-            -Pandroid.injected.version.code=${{ steps.version.outputs.version_code }} \
-            -Pandroid.injected.version.name=${{ steps.version.outputs.version_name }} \
-            --info 2>&1 | grep -E "(BUILD|FAILED|error:|warning:|> Task|Exception)" | tail -60
-
-      # Второй запуск без фильтра — чтобы реальный exit code прошёл
-      - name: 🔧 Build Debug APK (final)
         run: |
           gradle assembleDebug \
             -Pandroid.injected.version.code=${{ steps.version.outputs.version_code }} \

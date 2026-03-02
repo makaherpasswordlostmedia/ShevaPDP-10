@@ -2,36 +2,23 @@ name: Build & Release PDP-10 Emulator
 
 on:
   push:
-    branches:
-      - main
-      - develop
-    tags:
-      - 'v*.*.*'           # Триггер релиза при теге вида v1.0.0
-
+    branches: [main, develop]
+    tags:     ['v*.*.*']
   pull_request:
-    branches:
-      - main
-
-  workflow_dispatch:       # Ручной запуск через GitHub UI
+    branches: [main]
+  workflow_dispatch:
     inputs:
       release_type:
         description: 'Тип сборки'
         required: true
         default: 'debug'
         type: choice
-        options:
-          - debug
-          - release
+        options: [debug, release]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Переменные окружения
-# ─────────────────────────────────────────────────────────────────────────────
 env:
   JAVA_VERSION: '17'
-  ANDROID_COMPILE_SDK: '34'
-  ANDROID_BUILD_TOOLS: '34.0.0'
+  GRADLE_VERSION: '8.6'
   APK_PATH: app/build/outputs/apk
-  AAB_PATH: app/build/outputs/bundle
 
 jobs:
 
@@ -46,30 +33,24 @@ jobs:
       - name: 📥 Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0              # Полная история для версионирования
+          fetch-depth: 0
 
       - name: ☕ Setup JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
           java-version: ${{ env.JAVA_VERSION }}
-          distribution: 'temurin'
-          cache: gradle
+          distribution: temurin
 
-      - name: 🔑 Grant Gradle execute permission
-        run: chmod +x gradlew
-
-      - name: 🗂️ Cache Gradle packages
-        uses: actions/cache@v4
+      # gradle/actions/setup-gradle сам скачивает нужную версию Gradle.
+      # gradle-wrapper.jar в репозитории НЕ нужен — это и есть суть фикса.
+      - name: 🐘 Setup Gradle ${{ env.GRADLE_VERSION }}
+        uses: gradle/actions/setup-gradle@v3
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-read-only: false
 
       - name: 🔍 Run Lint
-        run: ./gradlew lint --stacktrace
+        run: gradle lint --stacktrace
         continue-on-error: true
 
       - name: 📊 Upload Lint Report
@@ -81,7 +62,7 @@ jobs:
           retention-days: 7
 
       - name: 🧪 Run Unit Tests
-        run: ./gradlew testDebugUnitTest --stacktrace
+        run: gradle testDebugUnitTest --stacktrace
         continue-on-error: true
 
       - name: 📊 Upload Test Results
@@ -109,20 +90,12 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: ${{ env.JAVA_VERSION }}
-          distribution: 'temurin'
-          cache: gradle
+          distribution: temurin
 
-      - name: 🔑 Grant Gradle execute permission
-        run: chmod +x gradlew
-
-      - name: 🗂️ Cache Gradle
-        uses: actions/cache@v4
+      - name: 🐘 Setup Gradle ${{ env.GRADLE_VERSION }}
+        uses: gradle/actions/setup-gradle@v3
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+          gradle-version: ${{ env.GRADLE_VERSION }}
 
       - name: 🔢 Get version info
         id: version
@@ -130,12 +103,12 @@ jobs:
           VERSION_CODE=${{ github.run_number }}
           VERSION_NAME=$(git describe --tags --always --dirty 2>/dev/null || echo "dev-${GITHUB_SHA::7}")
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
-          echo "version_name=$VERSION_NAME"  >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
           echo "📦 Version: $VERSION_NAME ($VERSION_CODE)"
 
       - name: 🔧 Build Debug APK
         run: |
-          ./gradlew assembleDebug \
+          gradle assembleDebug \
             -Pandroid.injected.version.code=${{ steps.version.outputs.version_code }} \
             -Pandroid.injected.version.name=${{ steps.version.outputs.version_name }} \
             --stacktrace
@@ -145,10 +118,6 @@ jobs:
           APK=$(find ${{ env.APK_PATH }}/debug -name "*.apk" | head -1)
           echo "APK: $APK"
           ls -lh "$APK"
-          # Show APK details using aapt if available
-          if command -v aapt &> /dev/null; then
-            aapt dump badging "$APK" | grep -E "(package|application-label|sdkVersion)"
-          fi
 
       - name: 🏷️ Rename APK
         run: |
@@ -181,42 +150,33 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: ${{ env.JAVA_VERSION }}
-          distribution: 'temurin'
-          cache: gradle
+          distribution: temurin
 
-      - name: 🔑 Grant Gradle execute permission
-        run: chmod +x gradlew
-
-      - name: 🗂️ Cache Gradle
-        uses: actions/cache@v4
+      - name: 🐘 Setup Gradle ${{ env.GRADLE_VERSION }}
+        uses: gradle/actions/setup-gradle@v3
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+          gradle-version: ${{ env.GRADLE_VERSION }}
 
       - name: 🔢 Get version from tag
         id: version
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          VERSION_NAME=${TAG#v}                    # убираем 'v' из v1.2.3
+          VERSION_NAME=${TAG#v}
           VERSION_CODE=${{ github.run_number }}
-          echo "tag=$TAG"                          >> $GITHUB_OUTPUT
-          echo "version_name=$VERSION_NAME"        >> $GITHUB_OUTPUT
-          echo "version_code=$VERSION_CODE"        >> $GITHUB_OUTPUT
+          echo "tag=$TAG"                   >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "📦 Release: $TAG → $VERSION_NAME ($VERSION_CODE)"
 
-      # Подпись APK через keystore из GitHub Secrets
-      # secrets.* нельзя использовать в if: — проверяем через env-переменную
+      # secrets.* нельзя в if: — проверяем через env → output
       - name: 🔍 Check keystore availability
         id: keystore_check
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "available=true" >> $GITHUB_OUTPUT
-            echo "✅ Keystore secret найден — будет подписан Release APK"
+            echo "available=true"  >> $GITHUB_OUTPUT
+            echo "✅ Keystore найден — APK будет подписан"
           else
             echo "available=false" >> $GITHUB_OUTPUT
             echo "⚠️  KEYSTORE_BASE64 не задан — APK будет unsigned (см. SECRETS_SETUP.md)"
@@ -228,27 +188,37 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > keystore.jks
-          echo "✅ Keystore decoded"
+          echo "✅ keystore.jks создан"
 
-      - name: 📝 Create signing config
+      - name: 📝 Inject signing config into build.gradle
         if: steps.keystore_check.outputs.available == 'true'
         run: |
-          cat >> app/build.gradle << 'EOF'
-          android.signingConfigs.release {
-              storeFile file("${rootDir}/keystore.jks")
-              storePassword System.getenv("KEYSTORE_PASSWORD")
-              keyAlias System.getenv("KEY_ALIAS")
-              keyPassword System.getenv("KEY_PASSWORD")
+          cat >> app/build.gradle << 'GRADLE_EOF'
+
+          android {
+              signingConfigs {
+                  release {
+                      storeFile     file("${rootDir}/keystore.jks")
+                      storePassword System.getenv("KEYSTORE_PASSWORD")
+                      keyAlias      System.getenv("KEY_ALIAS")
+                      keyPassword   System.getenv("KEY_PASSWORD")
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                  }
+              }
           }
-          EOF
+          GRADLE_EOF
 
       - name: 🚀 Build Release APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:      ${{ secrets.KEY_PASSWORD }}
         run: |
-          ./gradlew assembleRelease \
+          gradle assembleRelease \
             -Pandroid.injected.version.code=${{ steps.version.outputs.version_code }} \
             -Pandroid.injected.version.name=${{ steps.version.outputs.version_name }} \
             --stacktrace
@@ -291,7 +261,6 @@ jobs:
           path: release/
 
       - name: 📋 Generate Changelog
-        id: changelog
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           PREV_TAG=$(git describe --tags --abbrev=0 ${TAG}^ 2>/dev/null || echo "")
@@ -302,28 +271,25 @@ jobs:
             CHANGES=$(git log --pretty=format:"- %s" --no-merges -20)
           fi
 
-          # Write changelog to file (handles multiline)
           cat > CHANGELOG.md << EOF
           ## PDP-10 Emulator ${TAG}
 
-          ### Что нового
+          ### Изменения
           ${CHANGES}
 
           ### Об эмуляторе
-          - 🖥️ Полная эмуляция KA10/KI10 PDP-10
-          - 🧠 256K слов оперативной памяти (36-бит)
-          - ⌨️ Встроенный терминал с зелёным экраном
+          - 🖥️ KA10/KI10 PDP-10 с 36-битной архитектурой
+          - 🧠 256K слов оперативной памяти
+          - ⌨️ Встроенный терминал (зелёный экран)
           - ⚙️ Ассемблер MACRO-10
-          - 🔍 Отладчик с дизассемблером
-          - 📱 Android 8.0+
+          - 🔍 Дебаггер с дизассемблером
+          - 📱 Требует Android 8.0+
 
           ### Установка
           1. Скачайте APK ниже
-          2. На Android: Настройки → Безопасность → Неизвестные источники → ВКЛ
-          3. Откройте скачанный APK и установите
+          2. Android: Настройки → Безопасность → Разрешить установку из неизвестных источников
+          3. Откройте APK и установите
           EOF
-
-          echo "changelog_file=CHANGELOG.md" >> $GITHUB_OUTPUT
 
       - name: 🎉 Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -333,14 +299,13 @@ jobs:
           body_path: CHANGELOG.md
           draft: false
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
-          files: |
-            release/*.apk
+          files: release/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 
 # =============================================================================
-# JOB 5: Статус badge (summary)
+# JOB 5: Summary
 # =============================================================================
   summary:
     name: 📊 Build Summary
@@ -355,11 +320,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Шаг | Статус |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Lint & Tests | ${{ needs.test.result == 'success' && '✅' || '❌' }} ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Debug APK    | ${{ needs.build-debug.result == 'success' && '✅' || '❌' }} ${{ needs.build-debug.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint & Tests | ${{ needs.test.result == 'success' && '✅' || '❌' }} \`${{ needs.test.result }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Debug APK    | ${{ needs.build-debug.result == 'success' && '✅' || '❌' }} \`${{ needs.build-debug.result }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Коммит:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Ветка:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Триггер:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Триггер:** \`${{ github.event_name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> APK доступен во вкладке **Actions → Artifacts** выше ☝️" >> $GITHUB_STEP_SUMMARY
+          echo "> 💡 APK доступен во вкладке **Actions → Artifacts**" >> $GITHUB_STEP_SUMMARY

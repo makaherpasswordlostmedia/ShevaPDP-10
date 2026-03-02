@@ -1,0 +1,358 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0D0D0D">
+
+    <!-- Toolbar -->
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        android:background="#1A1A2E"
+        android:elevation="4dp"
+        app:title="PDP-10 Emulator"
+        app:titleTextColor="#00FF41"
+        app:subtitleTextColor="#007020"/>
+
+    <!-- Tab Layout -->
+    <com.google.android.material.tabs.TabLayout
+        android:id="@+id/tab_layout"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:background="#111122"
+        app:tabTextColor="#007020"
+        app:tabSelectedTextColor="#00FF41"
+        app:tabIndicatorColor="#00FF41"
+        app:tabIndicatorHeight="2dp">
+
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="TERMINAL"/>
+
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="EDITOR"/>
+
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DEBUG"/>
+
+    </com.google.android.material.tabs.TabLayout>
+
+    <!-- Content Panels (only one visible at a time) -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <!-- TERMINAL PANEL -->
+        <ScrollView
+            android:id="@+id/panel_terminal"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:fillViewport="true"
+            android:background="#0D0D0D">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="4dp">
+
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                    <com.pdp10.emulator.terminal.TerminalView
+                        android:id="@+id/terminal_view"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:focusable="true"
+                        android:focusableInTouchMode="true"
+                        android:clickable="true"/>
+
+                </HorizontalScrollView>
+
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- EDITOR PANEL -->
+        <LinearLayout
+            android:id="@+id/panel_editor"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:background="#0D0D0D">
+
+            <!-- Editor toolbar -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:orientation="horizontal"
+                android:background="#111122"
+                android:padding="4dp"
+                android:gravity="center_vertical">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_assemble"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="⚙ ASSEMBLE"
+                    android:textSize="11sp"
+                    android:backgroundTint="#004400"
+                    android:textColor="#00FF41"
+                    android:onClick="assembleCode"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                <View android:layout_width="4dp" android:layout_height="1dp"/>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_run_editor"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="▶ RUN"
+                    android:textSize="11sp"
+                    android:backgroundTint="#003300"
+                    android:textColor="#00FF41"
+                    android:onClick="runFromEditor"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                <View android:layout_width="4dp" android:layout_height="1dp"/>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_clear_editor"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="✕ CLEAR"
+                    android:textSize="11sp"
+                    android:backgroundTint="#220000"
+                    android:textColor="#FF4444"
+                    android:onClick="clearEditor"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+            </LinearLayout>
+
+            <!-- Code editor -->
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1">
+
+                <EditText
+                    android:id="@+id/editor_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@null"
+                    android:textColor="#00FF41"
+                    android:textColorHint="#005010"
+                    android:hint="; PDP-10 Assembly&#10;; Enter code here..."
+                    android:fontFamily="monospace"
+                    android:textSize="13sp"
+                    android:padding="8dp"
+                    android:gravity="top|start"
+                    android:inputType="textMultiLine|textNoSuggestions"
+                    android:imeOptions="flagNoEnterAction"
+                    android:scrollHorizontally="false"/>
+
+            </ScrollView>
+
+            <!-- Assembly output -->
+            <View android:layout_width="match_parent" android:layout_height="1dp"
+                android:background="#003300"/>
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="120dp"
+                android:background="#060606">
+
+                <TextView
+                    android:id="@+id/assembler_output"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="#007020"
+                    android:fontFamily="monospace"
+                    android:textSize="11sp"
+                    android:padding="6dp"
+                    android:text="Assembly output will appear here..."/>
+
+            </ScrollView>
+
+        </LinearLayout>
+
+        <!-- DEBUG PANEL -->
+        <ScrollView
+            android:id="@+id/panel_debug"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone"
+            android:background="#0D0D0D">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="8dp">
+
+                <!-- CPU Control buttons -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/dbg_run"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:text="▶ RUN"
+                        android:textColor="#00FF41"
+                        android:backgroundTint="#003300"
+                        android:onClick="onDebugRun"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                    <View android:layout_width="4dp" android:layout_height="1dp"/>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/dbg_step"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:text="⏭ STEP"
+                        android:textColor="#FFFF44"
+                        android:backgroundTint="#333300"
+                        android:onClick="onDebugStep"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                    <View android:layout_width="4dp" android:layout_height="1dp"/>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/dbg_stop"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:text="■ STOP"
+                        android:textColor="#FF4444"
+                        android:backgroundTint="#330000"
+                        android:onClick="onDebugStop"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                    <View android:layout_width="4dp" android:layout_height="1dp"/>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/dbg_reset"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:text="⟳ RESET"
+                        android:textColor="#44FFFF"
+                        android:backgroundTint="#003333"
+                        android:onClick="onDebugReset"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                </LinearLayout>
+
+                <!-- Registers section -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="── REGISTERS ──"
+                    android:textColor="#00FF41"
+                    android:fontFamily="monospace"
+                    android:textSize="12sp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="4dp"/>
+
+                <TextView
+                    android:id="@+id/debug_registers"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="#060606"
+                    android:textColor="#00CC33"
+                    android:fontFamily="monospace"
+                    android:textSize="12sp"
+                    android:padding="8dp"
+                    android:text="[No data]"/>
+
+                <!-- Disassembly section -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="── DISASSEMBLY ──"
+                    android:textColor="#00FF41"
+                    android:fontFamily="monospace"
+                    android:textSize="12sp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="4dp"/>
+
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                    <TextView
+                        android:id="@+id/debug_disasm"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="#060606"
+                        android:textColor="#AAFFAA"
+                        android:fontFamily="monospace"
+                        android:textSize="12sp"
+                        android:padding="8dp"
+                        android:text="[No data]"/>
+
+                </HorizontalScrollView>
+
+                <!-- Memory view section -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="── MEMORY DUMP ──"
+                    android:textColor="#00FF41"
+                    android:fontFamily="monospace"
+                    android:textSize="12sp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="4dp"/>
+
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                    <TextView
+                        android:id="@+id/debug_memory"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="#060606"
+                        android:textColor="#44FFFF"
+                        android:fontFamily="monospace"
+                        android:textSize="11sp"
+                        android:padding="8dp"
+                        android:text="[No data]"/>
+
+                </HorizontalScrollView>
+
+            </LinearLayout>
+        </ScrollView>
+
+    </FrameLayout>
+
+    <!-- Status Bar -->
+    <TextView
+        android:id="@+id/status_bar"
+        android:layout_width="match_parent"
+        android:layout_height="24dp"
+        android:background="#0A0A1A"
+        android:textColor="#007020"
+        android:fontFamily="monospace"
+        android:textSize="10sp"
+        android:gravity="center_vertical"
+        android:paddingStart="8dp"
+        android:text="■ HALTED  PC:000200  Insn:0"/>
+
+</LinearLayout>

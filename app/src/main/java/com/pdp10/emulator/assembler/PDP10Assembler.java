@@ -445,4 +445,51 @@ public class PDP10Assembler {
             "        LOC 200\n" +
             "\n" +
             "START:  MOVEI 0,0       ; F(0) = 0\n" +
-            "        MOVEI 1,1       ; F(1) = 1
+            "        MOVEI 1,1       ; F(1) = 1\n" +
+            "        MOVEI 2,14      ; Count = 14 (octal), 12 iterations\n" +
+            "\n" +
+            "LOOP:   MOVEM 0,RESULT  ; Store current Fibonacci number\n" +
+            "        MOVE  3,1       ; Save F(n+1)\n" +
+            "        ADD   1,0       ; F(n+2) = F(n) + F(n+1)\n" +
+            "        MOVE  0,3       ; F(n) = old F(n+1)\n" +
+            "        SOJE  2,DONE    ; Decrement counter, jump if zero\n" +
+            "        JRST  LOOP      ; Continue\n" +
+            "\n" +
+            "DONE:   HALT            ; Done - result in AC0\n" +
+            "\n" +
+            "RESULT: EXP 0           ; Storage for current value\n" +
+            "        END START\n";
+    }
+
+    /**
+     * Returns a counter/loop program
+     */
+    public static String getCounterProgram() {
+        return
+            "; PDP-10 Counter Demo\n" +
+            "; Counts from 0 to 7 and stores results\n" +
+            "\n" +
+            "        LOC 200\n" +
+            "\n" +
+            "START:  MOVEI 0,0       ; Counter = 0\n" +
+            "        MOVEI 1,TABLE   ; Pointer to table\n" +
+            "\n" +
+            "LOOP:   MOVEM 0,(1)     ; Store counter at (1)\n" +
+            "        ADDI  1,1       ; Increment pointer\n" +
+            "        AOJA  0,LOOP    ; Increment AC0 and loop always\n" +
+            "        CAIGE 0,10      ; Skip if AC0 >= 10 (octal)\n" +
+            "        JRST  LOOP\n" +
+            "\n" +
+            "HALT:   HALT\n" +
+            "\n" +
+            "TABLE:  EXP 0\n" +
+            "        EXP 0\n" +
+            "        EXP 0\n" +
+            "        EXP 0\n" +
+            "        EXP 0\n" +
+            "        EXP 0\n" +
+            "        EXP 0\n" +
+            "        EXP 0\n" +
+            "        END START\n";
+    }
+}

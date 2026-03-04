@@ -4,14 +4,14 @@ import com.pdp10.emulator.memory.PDP10Memory;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * PDP-10 CPU Emulator — KA10/KI10 instruction set
+ * PDP-10 CPU Emulator -- KA10/KI10 instruction set
  *
  * 36-bit word, 18-bit addressing, 256K words, 16 accumulators.
  * Ones-complement arithmetic.
  */
 public class PDP10CPU {
 
-    // ── Constants ─────────────────────────────────────────────────────────────
+    // -- Constants -------------------------------------------------------------
     // NOTE: Java forbids underscore immediately after 0x prefix.
     // All hex literals are written without leading underscore.
     public static final long WORD_MASK       = 0xFFFFFFFFFL;   // 36 bits
@@ -22,7 +22,7 @@ public class PDP10CPU {
     public static final long LEFT_HALF_MASK  = 0xFFFFC0000L;   // bits 35-18
     public static final long RIGHT_HALF_MASK = 0x000003FFFFL;  // bits 17-0
 
-    // ── Flags ─────────────────────────────────────────────────────────────────
+    // -- Flags -----------------------------------------------------------------
     public static final long FLAG_OV   = (1L << 35);
     public static final long FLAG_CY0  = (1L << 34);
     public static final long FLAG_CY1  = (1L << 33);
@@ -31,12 +31,12 @@ public class PDP10CPU {
     public static final long FLAG_TR2  = (1L << 30);
     public static final long FLAG_USER = (1L << 27);
 
-    // ── Registers ─────────────────────────────────────────────────────────────
+    // -- Registers -------------------------------------------------------------
     private final long[] AC = new long[16];
     private int  PC    = 0200;   // conventional start
     private long FLAGS = 0;
 
-    // ── Subsystems ────────────────────────────────────────────────────────────
+    // -- Subsystems ------------------------------------------------------------
     private final PDP10Memory memory;
     private final IOHandler   io;
 
@@ -48,7 +48,7 @@ public class PDP10CPU {
 
     private final long[] opStats = new long[512];
 
-    // ── I/O callback ──────────────────────────────────────────────────────────
+    // -- I/O callback ----------------------------------------------------------
     public interface IOHandler {
         void writeChar(char c);
         int  readChar();          // -1 if nothing available
@@ -88,8 +88,14 @@ public class PDP10CPU {
     public void run() {
         running.set(true);
         halted.set(false);
+        int yieldCounter = 0;
         while (running.get() && !halted.get()) {
             step();
+            // Yield every 10000 instructions to keep UI responsive
+            if (++yieldCounter >= 10000) {
+                yieldCounter = 0;
+                Thread.yield();
+            }
         }
         running.set(false);
     }
@@ -176,7 +182,7 @@ public class PDP10CPU {
         return ((r << 18) | l) & WORD_MASK;
     }
 
-    // ─── Shifts ───────────────────────────────────────────────────────────────
+    // --- Shifts ---------------------------------------------------------------
 
     private long ash(long v, int cnt) {
         long sign = v & SIGN_BIT;
@@ -202,7 +208,7 @@ public class PDP10CPU {
         return c >= 0x100 ? c - 0x200 : c;
     }
 
-    // ─── Integer multiply / divide ────────────────────────────────────────────
+    // --- Integer multiply / divide --------------------------------------------
 
     private long imul(long a, long b) {
         long r = (signed(a) * signed(b));
@@ -218,7 +224,7 @@ public class PDP10CPU {
         if (ac + 1 < 16) AC[ac + 1] = r & WORD_MASK;
     }
 
-    // ─── Jump condition test ──────────────────────────────────────────────────
+    // --- Jump condition test --------------------------------------------------
 
     private boolean testCond(int cond, long val) {
         switch (cond & 7) {
@@ -249,15 +255,29 @@ public class PDP10CPU {
 
         switch (op) {
 
-        // ── LUUO 000-077 ──────────────────────────────────────────────────────
+        // -- Monitor calls & LUUO 000-077 -------------------------------------
+        case 0001:                                                          // HALT
+            halt("HALT at " + String.format("%06o", PC - 1));
+            break;
+        case 0002:                                                          // OUTCHR
+            if (io != null && AC[ac] != 0) io.writeChar((char)(AC[ac] & 0x7F));
+            break;
+        case 0003:                                                          // INCHR
+            AC[ac] = (io != null) ? Math.max(0, io.readChar()) : 0;
+            break;
         default:
-            // Unimplemented User UO — store and vector
-            memory.write(040, w);
-            memory.write(041, (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
-            PC = 042;
+            // LUUO 000-077: store instruction and dispatch
+            if (op == 0) {
+                // Opcode 0 = uninitialized memory; treat as HALT to avoid infinite loop
+                halt("Uninitialized memory at " + String.format("%06o", PC - 1));
+            } else {
+                memory.write(040, w);
+                memory.write(041, (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
+                PC = 042;
+            }
             break;
 
-        // ── MOVE group 200-217 ────────────────────────────────────────────────
+        // -- MOVE group 200-217 ------------------------------------------------
         case 0200: AC[ac] = memory.read(ea(w));                    break; // MOVE
         case 0201: AC[ac] = ea(w) & HALF_MASK;                     break; // MOVEI
         case 0202: memory.write(ea(w), AC[ac]);                    break; // MOVEM
@@ -275,7 +295,7 @@ public class PDP10CPU {
         case 0216: { long v=AC[ac]; memory.write(ea(w), isNeg(v)?neg(v):v); break; } // MOVMM
         case 0217: { long v=memory.read(ea(w)); v=isNeg(v)?neg(v):v; if(ac!=0)AC[ac]=v; memory.write(ea(w),v); break; } // MOVMS
 
-        // ── Integer arithmetic 220-237 ────────────────────────────────────────
+        // -- Integer arithmetic 220-237 ----------------------------------------
         case 0220: AC[ac] = imul(AC[ac], memory.read(ea(w)));      break; // IMUL
         case 0221: AC[ac] = imul(AC[ac], ea(w)&HALF_MASK);         break; // IMULI
         case 0222: memory.write(ea(w), imul(AC[ac], memory.read(ea(w)))); break; // IMULM
@@ -283,7 +303,7 @@ public class PDP10CPU {
         case 0230: idiv(ac, AC[ac], memory.read(ea(w)));            break; // IDIV
         case 0231: idiv(ac, AC[ac], ea(w)&HALF_MASK);               break; // IDIVI
 
-        // ── Shift group 240-247 ───────────────────────────────────────────────
+        // -- Shift group 240-247 -----------------------------------------------
         case 0240: AC[ac] = ash(AC[ac], parseCnt(ea(w)));           break; // ASH
         case 0241: AC[ac] = rot(AC[ac], parseCnt(ea(w)));           break; // ROT
         case 0242: AC[ac] = lsh(AC[ac], parseCnt(ea(w)));           break; // LSH
@@ -327,7 +347,7 @@ public class PDP10CPU {
             break;
         }
 
-        // ── Jump/call group 254-267 ───────────────────────────────────────────
+        // -- Jump/call group 254-267 -------------------------------------------
         case 0254: {                                                        // JRST
             int e = ea(w);
             if ((ac & 010) != 0) FLAGS = memory.read(PC-1) & LEFT_HALF_MASK;
@@ -392,7 +412,7 @@ public class PDP10CPU {
             break;
         }
 
-        // ── ADD / SUB 270-277 ─────────────────────────────────────────────────
+        // -- ADD / SUB 270-277 -------------------------------------------------
         case 0270: AC[ac] = add(AC[ac], memory.read(ea(w)));       break;  // ADD
         case 0271: AC[ac] = add(AC[ac], ea(w) & HALF_MASK);        break;  // ADDI
         case 0272: { int e=ea(w); memory.write(e, add(AC[ac], memory.read(e))); break; } // ADDM
@@ -402,7 +422,7 @@ public class PDP10CPU {
         case 0276: { int e=ea(w); memory.write(e, sub(memory.read(e), AC[ac])); break; } // SUBM
         case 0277: { int e=ea(w); long r=sub(AC[ac],memory.read(e)); AC[ac]=r; memory.write(e,r); break; } // SUBB
 
-        // ── Compare/Skip 300-337 ──────────────────────────────────────────────
+        // -- Compare/Skip 300-337 ----------------------------------------------
         // CAI family (immediate compare, 300-307)
         case 0300: case 0301: case 0302: case 0303:
         case 0304: case 0305: case 0306: case 0307: {
@@ -417,7 +437,7 @@ public class PDP10CPU {
             if (testCond(op & 7, diff)) PC = (PC + 1) & 0x3FFFF;
             break;
         }
-        // JUMP family (320-327) — jump if AC matches condition
+        // JUMP family (320-327) -- jump if AC matches condition
         case 0320: case 0321: case 0322: case 0323:
         case 0324: case 0325: case 0326: case 0327: {
             int e = ea(w);
@@ -433,7 +453,7 @@ public class PDP10CPU {
             break;
         }
 
-        // ── AOJ/AOS/SOJ/SOS 340-377 ──────────────────────────────────────────
+        // -- AOJ/AOS/SOJ/SOS 340-377 ------------------------------------------
         case 0340: case 0341: case 0342: case 0343:
         case 0344: case 0345: case 0346: case 0347: {                // AOJ
             int e = ea(w); AC[ac] = add(AC[ac], 1);
@@ -461,7 +481,7 @@ public class PDP10CPU {
             break;
         }
 
-        // ── Boolean 400-477 ───────────────────────────────────────────────────
+        // -- Boolean 400-477 ---------------------------------------------------
         case 0400: case 0401: case 0402: case 0403:  // SETZ
         case 0404: case 0405: case 0406: case 0407:  // AND
         case 0410: case 0411: case 0412: case 0413:  // ANDCA
@@ -480,7 +500,7 @@ public class PDP10CPU {
         case 0474: case 0475: case 0476: case 0477:  // SETO
             boolOp(op, ac, w); break;
 
-        // ── Half-word 500-577 ─────────────────────────────────────────────────
+        // -- Half-word 500-577 -------------------------------------------------
         case 0500: case 0501: case 0502: case 0503:
         case 0504: case 0505: case 0506: case 0507:
         case 0510: case 0511: case 0512: case 0513:
@@ -499,7 +519,7 @@ public class PDP10CPU {
         case 0574: case 0575: case 0576: case 0577:
             halfOp(op, ac, w); break;
 
-        // ── Test 600-677 ──────────────────────────────────────────────────────
+        // -- Test 600-677 ------------------------------------------------------
         case 0600: case 0601: case 0602: case 0603:
         case 0604: case 0605: case 0606: case 0607:
         case 0610: case 0611: case 0612: case 0613:
@@ -518,7 +538,7 @@ public class PDP10CPU {
         case 0674: case 0675: case 0676: case 0677:
             testOp(op, ac, w); break;
 
-        // ── I/O 700-777 ───────────────────────────────────────────────────────
+        // -- I/O 700-777 -------------------------------------------------------
         case 0700: case 0701: case 0702: case 0703:
         case 0704: case 0705: case 0706: case 0707:
         case 0710: case 0711: case 0712: case 0713:
@@ -649,24 +669,34 @@ public class PDP10CPU {
     }
 
     // =========================================================================
-    // I/O operations (700-777) — minimal CTY console emulation
+    // I/O operations (700-777) -- minimal CTY console emulation
     // =========================================================================
 
     private void ioOp(int op, int ac, long w) {
-        int e      = ea(w);
-        int device = (op >> 3) & 077;
-        int func   = op & 07;
-        if (device == 0) {  // CTY
+        // PDP-10 I/O format: opcode bits 5-3 = device[2:0], bits 2-0 = function
+        // device[6:3] comes from AC field; function codes:
+        // 0=BLKI, 1=DATAI, 2=BLKO, 3=DATAO, 4=CONO, 5=CONI, 6=CONSZ, 7=CONSO
+        int devLow  = (op >> 3) & 07;
+        int devHigh = ac & 0xF;
+        int device  = (devHigh << 3) | devLow;
+        int func    = op & 07;
+
+        // Device 0 = APR/console (CTY) in our simple emulator
+        if (device == 0 || device == 0120) {
             switch (func) {
-                case 1: AC[ac] = 0xC0L; break;          // CONI — ready
-                case 2: if (io != null) {                // DATAO — output
-                    char c = (char)(AC[ac] & 0x7F);
-                    if (c != 0) io.writeChar(c);
-                } break;
-                case 3: if (io != null) {                // DATAI — input
-                    int ch = io.readChar();
-                    AC[ac] = ch >= 0 ? ch & 0x7FL : 0;
-                } break;
+                case 5: AC[ac] = 0300L; break;          // CONI -- status: ready+done
+                case 3:                                  // DATAO -- output char
+                    if (io != null) {
+                        char c = (char)(AC[ac] & 0x7F);
+                        if (c != 0) io.writeChar(c);
+                    }
+                    break;
+                case 1:                                  // DATAI -- input char
+                    if (io != null) {
+                        int ch = io.readChar();
+                        AC[ac] = ch >= 0 ? ch & 0x7FL : 0;
+                    }
+                    break;
                 default: break;
             }
         }
@@ -698,6 +728,9 @@ public class PDP10CPU {
 
     public static String getMnemonic(int op) {
         switch (op) {
+            case 0001: return "HALT";
+            case 0002: return "OUTCHR";
+            case 0003: return "INCHR";
             case 0200: return "MOVE";  case 0201: return "MOVEI"; case 0202: return "MOVEM"; case 0203: return "MOVES";
             case 0204: return "MOVS";  case 0205: return "MOVSI"; case 0206: return "MOVSM"; case 0207: return "MOVSS";
             case 0210: return "MOVN";  case 0211: return "MOVNI"; case 0212: return "MOVNM"; case 0213: return "MOVNS";

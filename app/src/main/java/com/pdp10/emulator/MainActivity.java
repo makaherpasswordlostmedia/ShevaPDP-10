@@ -12,7 +12,6 @@ import android.widget.HorizontalScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
-import android.util.Log;
 import androidx.appcompat.widget.Toolbar;
 
 import com.google.android.material.tabs.TabLayout;
@@ -56,20 +55,7 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // Global crash handler — shows error in dialog instead of silent crash
-        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
-            Log.e("PDP10", "CRASH in " + thread.getName(), throwable);
-            String msg = throwable.getClass().getSimpleName() + ": " + throwable.getMessage()
-                       + "\n\nIn: " + (throwable.getStackTrace().length > 0
-                           ? throwable.getStackTrace()[0].toString() : "unknown");
-            mainHandler.post(() -> new AlertDialog.Builder(MainActivity.this)
-                .setTitle("Crash")
-                .setMessage(msg)
-                .setPositiveButton("OK", null)
-                .show());
-        });
-
-        mainHandler = new Handler(Looper.getMainLooper());
+                mainHandler = new Handler(Looper.getMainLooper());
         cpuExecutor = Executors.newSingleThreadExecutor();
 
         Toolbar toolbar = findViewById(R.id.toolbar);

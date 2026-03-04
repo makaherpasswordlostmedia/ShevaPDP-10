@@ -1,495 +1,383 @@
 package com.pdp10.emulator.assembler;
 
 import com.pdp10.emulator.memory.PDP10Memory;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
- * Simple PDP-10 Assembler
- * Supports basic MACRO-10 / MIDAS style assembly language.
- * 
- * Syntax:
- *   LABEL: MNEMONIC AC, @OFFSET(INDEX)
- *   LABEL: MNEMONIC AC, IMMEDIATE
- *   ; comment
+ * Two-pass PDP-10 assembler (MACRO-10 compatible subset).
+ * Syntax: LABEL: OPCODE AC, @OFFSET(INDEX) ; comment
+ * Numbers: octal default, decimal with trailing '.', hex with 0x
+ * Directives: LOC, EXP, .WORD, XWD, ASCII, ASCIZ, END
  */
 public class PDP10Assembler {
 
-    private PDP10Memory memory;
-
-    public static class AssemblyError {
-        public final int lineNumber;
-        public final String line;
-        public final String message;
-        public AssemblyError(int lineNumber, String line, String message) {
-            this.lineNumber = lineNumber;
-            this.line = line;
-            this.message = message;
-        }
-        @Override public String toString() {
-            return String.format("Line %d: %s\n  -> %s", lineNumber, line, message);
-        }
-    }
-
-    public static class AssemblyResult {
-        public final List<AssemblyError> errors = new ArrayList<>();
-        public int startAddress = 0200;
-        public int wordCount = 0;
-        public Map<String, Integer> symbols = new HashMap<>();
-
-        public boolean hasErrors() { return !errors.isEmpty(); }
-        public String errorReport() {
-            StringBuilder sb = new StringBuilder();
-            for (AssemblyError e : errors) sb.append(e.toString()).append('\n');
-            return sb.toString();
-        }
-    }
-
-    // Opcode table
-    private static final Map<String, Integer> OPCODES = new HashMap<>();
-    static {
-        OPCODES.put("MOVE", 0200);  OPCODES.put("MOVEI",0201); OPCODES.put("MOVEM",0202); OPCODES.put("MOVES",0203);
-        OPCODES.put("MOVS", 0204);  OPCODES.put("MOVSI",0205); OPCODES.put("MOVSM",0206); OPCODES.put("MOVSS",0207);
-        OPCODES.put("MOVN", 0210);  OPCODES.put("MOVNI",0211); OPCODES.put("MOVNM",0212); OPCODES.put("MOVNS",0213);
-        OPCODES.put("MOVM", 0214);  OPCODES.put("MOVMI",0215); OPCODES.put("MOVMM",0216); OPCODES.put("MOVMS",0217);
-        OPCODES.put("IMUL", 0220);  OPCODES.put("IMULI",0221); OPCODES.put("IMULM",0222); OPCODES.put("IMULB",0223);
-        OPCODES.put("MUL",  0224);  OPCODES.put("MULI", 0225); OPCODES.put("MULM", 0226); OPCODES.put("MULB", 0227);
-        OPCODES.put("IDIV", 0230);  OPCODES.put("IDIVI",0231); OPCODES.put("IDIVM",0232); OPCODES.put("IDIVB",0233);
-        OPCODES.put("DIV",  0234);  OPCODES.put("DIVI", 0235); OPCODES.put("DIVM", 0236); OPCODES.put("DIVB", 0237);
-        OPCODES.put("ASH",  0240);  OPCODES.put("ROT",  0241); OPCODES.put("LSH",  0242); OPCODES.put("JFFO", 0243);
-        OPCODES.put("ASHC", 0244);  OPCODES.put("ROTC", 0245); OPCODES.put("LSHC", 0246);
-        OPCODES.put("JRST", 0254);  OPCODES.put("JFCL", 0255); OPCODES.put("XCT",  0256);
-        OPCODES.put("PUSHJ",0260);  OPCODES.put("PUSH", 0261); OPCODES.put("POP",  0262); OPCODES.put("POPJ", 0263);
-        OPCODES.put("JSR",  0264);  OPCODES.put("JSP",  0265); OPCODES.put("JSA",  0266); OPCODES.put("JRA",  0267);
-        OPCODES.put("ADD",  0270);  OPCODES.put("ADDI", 0271); OPCODES.put("ADDM", 0272); OPCODES.put("ADDB", 0273);
-        OPCODES.put("SUB",  0274);  OPCODES.put("SUBI", 0275); OPCODES.put("SUBM", 0276); OPCODES.put("SUBB", 0277);
-        OPCODES.put("CAIL", 0300);  OPCODES.put("CAIE", 0301); OPCODES.put("CAILE",0302); OPCODES.put("CAIA", 0303);
-        OPCODES.put("CAIGE",0304);  OPCODES.put("CAIG", 0305); OPCODES.put("CAIN", 0306);
-        OPCODES.put("CAMN", 0316);  OPCODES.put("CAML", 0310); OPCODES.put("CAME", 0311); OPCODES.put("CAMLE",0312);
-        OPCODES.put("CAMA", 0313);  OPCODES.put("CAMGE",0314); OPCODES.put("CAMG", 0315);
-        OPCODES.put("JUMP", 0320);  OPCODES.put("JUMPL",0321); OPCODES.put("JUMPLE",0322); OPCODES.put("JUMPE",0323);
-        OPCODES.put("JUMPN",0324);  OPCODES.put("JUMPGE",0325);OPCODES.put("JUMPG",0326); OPCODES.put("JUMPA",0327);
-        OPCODES.put("SKIP", 0330);  OPCODES.put("SKIPL",0331); OPCODES.put("SKIPLE",0332);OPCODES.put("SKIPE",0333);
-        OPCODES.put("SKIPN",0334);  OPCODES.put("SKIPGE",0335);OPCODES.put("SKIPG",0336); OPCODES.put("SKIPA",0337);
-        OPCODES.put("AOJ",  0340);  OPCODES.put("AOJL", 0341); OPCODES.put("AOJLE",0342); OPCODES.put("AOJE", 0343);
-        OPCODES.put("AOJN", 0344);  OPCODES.put("AOJGE",0345); OPCODES.put("AOJG", 0346); OPCODES.put("AOJA", 0347);
-        OPCODES.put("AOS",  0350);  OPCODES.put("AOSL", 0351); OPCODES.put("AOSLE",0352); OPCODES.put("AOSE", 0353);
-        OPCODES.put("AOSN", 0354);  OPCODES.put("AOSGE",0355); OPCODES.put("AOSG", 0356); OPCODES.put("AOSA", 0357);
-        OPCODES.put("SOJ",  0360);  OPCODES.put("SOJL", 0361); OPCODES.put("SOJLE",0362); OPCODES.put("SOJE", 0363);
-        OPCODES.put("SOJN", 0364);  OPCODES.put("SOJGE",0365); OPCODES.put("SOJG", 0366); OPCODES.put("SOJA", 0367);
-        OPCODES.put("SOS",  0370);  OPCODES.put("SOSL", 0371); OPCODES.put("SOSLE",0372); OPCODES.put("SOSE", 0373);
-        OPCODES.put("SOSN", 0374);  OPCODES.put("SOSGE",0375); OPCODES.put("SOSG", 0376); OPCODES.put("SOSA", 0377);
-        OPCODES.put("SETZ", 0400);  OPCODES.put("AND",  0404); OPCODES.put("ANDCA",0410); OPCODES.put("SETM", 0414);
-        OPCODES.put("ANDCM",0420);  OPCODES.put("SETA", 0424); OPCODES.put("XOR",  0430); OPCODES.put("OR",   0434);
-        OPCODES.put("ANDCB",0440);  OPCODES.put("EQV",  0444); OPCODES.put("SETCA",0450); OPCODES.put("ORCA", 0454);
-        OPCODES.put("SETCM",0460);  OPCODES.put("ORCM", 0464); OPCODES.put("ORCB", 0470); OPCODES.put("SETO", 0474);
-        OPCODES.put("HRL",  0504);  OPCODES.put("HRLI", 0505); OPCODES.put("HRLM", 0506); OPCODES.put("HRLS", 0507);
-        OPCODES.put("HRR",  0540);  OPCODES.put("HRRI", 0541); OPCODES.put("HRRM", 0542); OPCODES.put("HRRS", 0543);
-        OPCODES.put("HLL",  0500);  OPCODES.put("HLLI", 0501); OPCODES.put("HLLM", 0502); OPCODES.put("HLLS", 0503);
-        OPCODES.put("TDN",  0600);  OPCODES.put("TDZ",  0620); OPCODES.put("TDO",  0660); OPCODES.put("TDC",  0640);
-        OPCODES.put("TSN",  0610);  OPCODES.put("TSZ",  0630); OPCODES.put("TSO",  0670); OPCODES.put("TSC",  0650);
-        // Pseudo-ops
-        OPCODES.put("HALT", 0254);  // JRST 0
-        OPCODES.put("NOP",  0254);  // JRST .+1
-    }
+    private final PDP10Memory memory;
 
     public PDP10Assembler(PDP10Memory memory) {
         this.memory = memory;
     }
 
+    // =========================================================================
+    // AssemblyResult
+    // =========================================================================
+
+    public static class AssemblyResult {
+        public final List<String>         errors  = new ArrayList<>();
+        public final Map<String, Integer> symbols = new HashMap<>();
+        public int wordCount    = 0;
+        public int startAddress = 0200;
+
+        public boolean hasErrors() { return !errors.isEmpty(); }
+
+        public String errorReport() {
+            StringBuilder sb = new StringBuilder();
+            for (String e : errors) sb.append(e).append('\n');
+            return sb.toString();
+        }
+    }
+
+    // =========================================================================
+    // Opcode table
+    // =========================================================================
+
+    private static final Map<String, Integer> OPS = new HashMap<>();
+    static {
+        OPS.put("MOVE",  0200); OPS.put("MOVEI", 0201); OPS.put("MOVEM", 0202); OPS.put("MOVES", 0203);
+        OPS.put("MOVS",  0204); OPS.put("MOVSI", 0205); OPS.put("MOVSM", 0206); OPS.put("MOVSS", 0207);
+        OPS.put("MOVN",  0210); OPS.put("MOVNI", 0211); OPS.put("MOVNM", 0212); OPS.put("MOVNS", 0213);
+        OPS.put("MOVM",  0214); OPS.put("MOVMI", 0215); OPS.put("MOVMM", 0216); OPS.put("MOVMS", 0217);
+        OPS.put("IMUL",  0220); OPS.put("IMULI", 0221); OPS.put("IMULM", 0222); OPS.put("IMULB", 0223);
+        OPS.put("MUL",   0224); OPS.put("MULI",  0225); OPS.put("MULM",  0226); OPS.put("MULB",  0227);
+        OPS.put("IDIV",  0230); OPS.put("IDIVI", 0231); OPS.put("IDIVM", 0232); OPS.put("IDIVB", 0233);
+        OPS.put("DIV",   0234); OPS.put("DIVI",  0235); OPS.put("DIVM",  0236); OPS.put("DIVB",  0237);
+        OPS.put("ASH",   0240); OPS.put("ROT",   0241); OPS.put("LSH",   0242); OPS.put("JFFO",  0243);
+        OPS.put("ASHC",  0244); OPS.put("ROTC",  0245); OPS.put("LSHC",  0246);
+        OPS.put("JRST",  0254); OPS.put("JFCL",  0255); OPS.put("XCT",   0256);
+        OPS.put("PUSHJ", 0260); OPS.put("PUSH",  0261); OPS.put("POP",   0262); OPS.put("POPJ",  0263);
+        OPS.put("JSR",   0264); OPS.put("JSP",   0265); OPS.put("JSA",   0266); OPS.put("JRA",   0267);
+        OPS.put("ADD",   0270); OPS.put("ADDI",  0271); OPS.put("ADDM",  0272); OPS.put("ADDB",  0273);
+        OPS.put("SUB",   0274); OPS.put("SUBI",  0275); OPS.put("SUBM",  0276); OPS.put("SUBB",  0277);
+        OPS.put("CAIL",  0300); OPS.put("CAIE",  0301); OPS.put("CAILE", 0302); OPS.put("CAIA",  0303);
+        OPS.put("CAIGE", 0304); OPS.put("CAIG",  0305); OPS.put("CAIN",  0306); OPS.put("CAM",   0307);
+        OPS.put("CAML",  0310); OPS.put("CAME",  0311); OPS.put("CAMLE", 0312); OPS.put("CAMA",  0313);
+        OPS.put("CAMGE", 0314); OPS.put("CAMG",  0315); OPS.put("CAMN",  0316); OPS.put("CAMM",  0317);
+        OPS.put("JUMP",  0320); OPS.put("JUMPL", 0321); OPS.put("JUMPLE",0322); OPS.put("JUMPE", 0323);
+        OPS.put("JUMPN", 0324); OPS.put("JUMPGE",0325); OPS.put("JUMPG", 0326); OPS.put("JUMPA", 0327);
+        OPS.put("SKIP",  0330); OPS.put("SKIPL", 0331); OPS.put("SKIPLE",0332); OPS.put("SKIPE", 0333);
+        OPS.put("SKIPN", 0334); OPS.put("SKIPGE",0335); OPS.put("SKIPG", 0336); OPS.put("SKIPA", 0337);
+        OPS.put("AOJ",   0340); OPS.put("AOJL",  0341); OPS.put("AOJLE", 0342); OPS.put("AOJE",  0343);
+        OPS.put("AOJN",  0344); OPS.put("AOJGE", 0345); OPS.put("AOJG",  0346); OPS.put("AOJA",  0347);
+        OPS.put("AOS",   0350); OPS.put("AOSL",  0351); OPS.put("AOSLE", 0352); OPS.put("AOSE",  0353);
+        OPS.put("AOSN",  0354); OPS.put("AOSGE", 0355); OPS.put("AOSG",  0356); OPS.put("AOSA",  0357);
+        OPS.put("SOJ",   0360); OPS.put("SOJL",  0361); OPS.put("SOJLE", 0362); OPS.put("SOJE",  0363);
+        OPS.put("SOJN",  0364); OPS.put("SOJGE", 0365); OPS.put("SOJG",  0366); OPS.put("SOJA",  0367);
+        OPS.put("SOS",   0370); OPS.put("SOSL",  0371); OPS.put("SOSLE", 0372); OPS.put("SOSE",  0373);
+        OPS.put("SOSN",  0374); OPS.put("SOSGE", 0375); OPS.put("SOSG",  0376); OPS.put("SOSA",  0377);
+        OPS.put("SETZ",  0400); OPS.put("SETZI", 0401); OPS.put("SETZM", 0402); OPS.put("SETZB", 0403);
+        OPS.put("AND",   0404); OPS.put("ANDI",  0405); OPS.put("ANDM",  0406); OPS.put("ANDB",  0407);
+        OPS.put("ANDCA", 0410); OPS.put("SETM",  0414); OPS.put("ANDCM", 0420);
+        OPS.put("SETA",  0424); OPS.put("SETAI", 0425);
+        OPS.put("XOR",   0430); OPS.put("XORI",  0431); OPS.put("XORM",  0432); OPS.put("XORB",  0433);
+        OPS.put("OR",    0434); OPS.put("ORI",   0435); OPS.put("ORM",   0436); OPS.put("ORB",   0437);
+        OPS.put("ANDCB", 0440); OPS.put("EQV",   0444); OPS.put("SETCA", 0450);
+        OPS.put("ORCA",  0454); OPS.put("SETCM", 0460); OPS.put("ORCM",  0464);
+        OPS.put("ORCB",  0470); OPS.put("SETO",  0474); OPS.put("SETOI", 0475);
+        OPS.put("HLL",   0500); OPS.put("HLLI",  0501); OPS.put("HLLM",  0502); OPS.put("HLLS",  0503);
+        OPS.put("HRL",   0504); OPS.put("HRLI",  0505); OPS.put("HRLM",  0506); OPS.put("HRLS",  0507);
+        OPS.put("HRR",   0540); OPS.put("HRRI",  0541); OPS.put("HRRM",  0542); OPS.put("HRRS",  0543);
+        OPS.put("HLR",   0544); OPS.put("HLRI",  0545); OPS.put("HLRM",  0546); OPS.put("HLRS",  0547);
+        OPS.put("HRRZ",  0550); OPS.put("HLRZ",  0554); OPS.put("HRRO",  0560); OPS.put("HLRO",  0564);
+        OPS.put("TRN",   0600); OPS.put("TLN",   0604); OPS.put("TRZ",   0620); OPS.put("TLZ",   0624);
+        OPS.put("TRC",   0640); OPS.put("TLC",   0644); OPS.put("TRO",   0660); OPS.put("TLO",   0664);
+        OPS.put("TDN",   0610); OPS.put("TSN",   0614); OPS.put("TDZ",   0630); OPS.put("TSZ",   0634);
+        OPS.put("TDC",   0650); OPS.put("TSC",   0654); OPS.put("TDO",   0670); OPS.put("TSO",   0674);
+        OPS.put("BLKI",  0700); OPS.put("DATAI", 0704); OPS.put("BLKO",  0710); OPS.put("DATAO", 0714);
+        OPS.put("CONO",  0720); OPS.put("CONI",  0724); OPS.put("CONSZ", 0730); OPS.put("CONSO", 0734);
+        // Pseudos
+        OPS.put("HALT",  0001); // dedicated halt sentinel
+        OPS.put("NOP",   0254);
+    }
+
+    private static final Map<String, Integer> DEVICES = new HashMap<>();
+    static {
+        DEVICES.put("APR", 0000); DEVICES.put("PI",  0004); DEVICES.put("PAG", 0010);
+        DEVICES.put("CTY", 0100); DEVICES.put("DTE", 0200);
+    }
+
+    // =========================================================================
+    // Assemble
+    // =========================================================================
+
     public AssemblyResult assemble(String source) {
         AssemblyResult result = new AssemblyResult();
         String[] lines = source.split("\n");
 
-        // Two-pass assembly
-        Map<String, Integer> symbolTable = new HashMap<>();
-        List<long[]> instructions = new ArrayList<>(); // [address, word, lineNum]
-        int currentAddress = 0200;
-        int originAddress  = 0200;
-
-        // Pass 1: collect labels and calculate addresses
-        for (int lineNum = 0; lineNum < lines.length; lineNum++) {
-            String line = lines[lineNum].trim();
-            if (line.isEmpty() || line.startsWith(";")) continue;
-
-            // Handle labels
-            if (line.contains(":")) {
-                int colonPos = line.indexOf(':');
-                String label = line.substring(0, colonPos).trim().toUpperCase();
-                symbolTable.put(label, currentAddress);
-                line = line.substring(colonPos + 1).trim();
+        // Pass 1: collect labels
+        int lc = 0200;
+        for (String line : lines) {
+            String raw = stripComment(line).trim();
+            if (raw.isEmpty()) continue;
+            if (raw.contains(":")) {
+                int col = raw.indexOf(':');
+                String lbl = raw.substring(0, col).trim().toUpperCase();
+                if (!lbl.isEmpty()) result.symbols.put(lbl, lc);
+                raw = raw.substring(col + 1).trim();
+                if (raw.isEmpty()) continue;
             }
-            if (line.isEmpty() || line.startsWith(";")) continue;
-
-            // Handle directives
-            String[] parts = splitLine(line);
-            String op = parts[0].toUpperCase();
-
-            if (op.equals(".LOC") || op.equals("LOC") || op.equals("RELOC")) {
-                try {
-                    currentAddress = parseNumber(parts.length > 1 ? parts[1] : "0200", symbolTable);
-                    originAddress = currentAddress;
-                } catch (Exception e) {
-                    result.errors.add(new AssemblyError(lineNum+1, line, "Bad address: " + e.getMessage()));
-                }
-                continue;
-            }
-            if (op.equals(".WORD") || op.equals("EXP") || op.equals("XWD")) {
-                currentAddress++;
-                continue;
-            }
-            if (op.equals(".ASCII") || op.equals("ASCIZ") || op.equals("ASCII")) {
-                String str = getStringArg(line);
-                currentAddress += (str.length() + 4) / 5; // 5 chars per word
-                continue;
-            }
-            if (op.equals("END") || op.equals(".END")) break;
-
-            if (OPCODES.containsKey(op)) {
-                currentAddress++;
+            String up = raw.toUpperCase();
+            String[] p = raw.split("\\s+", 2);
+            String mn = p[0].toUpperCase();
+            if (mn.equals("LOC") || mn.equals("RELOC")) {
+                lc = parseNum(p.length > 1 ? p[1].trim() : "0", result.symbols, null);
+            } else if (mn.equals("ASCII") || mn.equals("ASCIZ")) {
+                String s = extractString(raw);
+                lc += (s.length() + (mn.equals("ASCIZ") ? 1 : 0) + 4) / 5;
+            } else if (mn.equals("EXP") || mn.equals(".WORD")) {
+                lc += p.length > 1 ? p[1].split(",").length : 1;
+            } else if (mn.equals("XWD")) {
+                lc++;
+            } else if (mn.equals("END")) {
+                break;
+            } else {
+                lc++;
             }
         }
 
-        // Pass 2: assemble instructions
-        result.symbols = symbolTable;
-        currentAddress = originAddress;
-
-        for (int lineNum = 0; lineNum < lines.length; lineNum++) {
-            String rawLine = lines[lineNum];
-            String line = rawLine.trim();
-            if (line.isEmpty() || line.startsWith(";")) continue;
-
-            // Remove comment
-            int semicolon = line.indexOf(';');
-            if (semicolon >= 0) line = line.substring(0, semicolon).trim();
-            if (line.isEmpty()) continue;
-
-            // Skip labels
-            if (line.contains(":")) {
-                line = line.substring(line.indexOf(':') + 1).trim();
+        // Pass 2: emit
+        lc = 0200;
+        result.startAddress = 0200;
+        int wc = 0;
+        for (String line : lines) {
+            String raw = stripComment(line).trim();
+            if (raw.isEmpty()) continue;
+            if (raw.contains(":")) {
+                raw = raw.substring(raw.indexOf(':') + 1).trim();
+                if (raw.isEmpty()) continue;
             }
-            if (line.isEmpty()) continue;
+            String[] p = raw.split("\\s+", 2);
+            String mn = p[0].toUpperCase();
+            String rest = p.length > 1 ? p[1].trim() : "";
 
-            String[] parts = splitLine(line);
-            String op = parts[0].toUpperCase();
-
-            try {
-                if (op.equals("END") || op.equals(".END")) break;
-
-                if (op.equals(".LOC") || op.equals("LOC") || op.equals("RELOC")) {
-                    currentAddress = parseNumber(parts.length > 1 ? parts[1] : "0200", symbolTable);
-                    originAddress  = currentAddress;
-                    continue;
+            if (mn.equals("LOC") || mn.equals("RELOC")) {
+                lc = parseNum(rest, result.symbols, result);
+            } else if (mn.equals("END")) {
+                if (!rest.isEmpty()) result.startAddress = parseNum(rest, result.symbols, result);
+                break;
+            } else if (mn.equals("ASCII") || mn.equals("ASCIZ")) {
+                String s = extractString(raw);
+                if (mn.equals("ASCIZ")) s = s + "\0";
+                for (int w : packAscii(s)) { memory.write(lc++, w); wc++; }
+            } else if (mn.equals("EXP") || mn.equals(".WORD")) {
+                for (String tok : (rest.isEmpty() ? "0" : rest).split(",")) {
+                    memory.write(lc++, parseNum(tok.trim(), result.symbols, result));
+                    wc++;
                 }
-
-                if (op.equals("EXP") || op.equals(".WORD")) {
-                    long val = 0;
-                    if (parts.length > 1) val = parseExpression(parts[1], symbolTable, currentAddress);
-                    memory.write(currentAddress, val);
-                    instructions.add(new long[]{currentAddress, val, lineNum+1});
-                    currentAddress++;
-                    result.wordCount++;
-                    continue;
-                }
-
-                if (op.equals("XWD")) {
-                    long left = 0, right = 0;
-                    if (parts.length > 1) {
-                        String[] halves = parts[1].split(",");
-                        left  = parseExpression(halves[0].trim(), symbolTable, currentAddress);
-                        right = (halves.length > 1) ? parseExpression(halves[1].trim(), symbolTable, currentAddress) : 0;
-                    }
-                    long val = ((left & 0x3FFFFL) << 18) | (right & 0x3FFFFL);
-                    memory.write(currentAddress, val);
-                    currentAddress++;
-                    result.wordCount++;
-                    continue;
-                }
-
-                if (op.equals("ASCII") || op.equals("ASCIZ")) {
-                    String str = getStringArg(line);
-                    if (op.equals("ASCIZ")) str = str + '\0';
-                    int[] ascii = packAscii(str);
-                    for (int w : ascii) {
-                        memory.write(currentAddress++, w & 0xFFFFFFFFL);
-                        result.wordCount++;
-                    }
-                    continue;
-                }
-
-                if (op.equals("HALT")) {
-                    // JRST 0
-                    memory.write(currentAddress, (0254L << 27));
-                    currentAddress++;
-                    result.wordCount++;
-                    continue;
-                }
-
-                if (op.equals("NOP")) {
-                    memory.write(currentAddress, 0);
-                    currentAddress++;
-                    result.wordCount++;
-                    continue;
-                }
-
-                if (!OPCODES.containsKey(op)) {
-                    result.errors.add(new AssemblyError(lineNum+1, rawLine.trim(), "Unknown opcode: " + op));
-                    currentAddress++;
-                    continue;
-                }
-
-                int opcode = OPCODES.get(op);
-                int ac = 0, x = 0, y = 0, indirect = 0;
-
-                // Parse operands: AC, @Y(X)  or  AC, Y  or  Y
-                if (parts.length > 1) {
-                    String operands = parts[1];
-                    // Check if first operand is AC
-                    if (operands.contains(",")) {
-                        int commaIdx = operands.indexOf(',');
-                        String acStr = operands.substring(0, commaIdx).trim();
-                        String eaStr = operands.substring(commaIdx + 1).trim();
-                        ac = parseNumber(acStr, symbolTable) & 017;
-
-                        // Parse EA: @Y(X)
-                        ParsedEA ea = parseEA(eaStr, symbolTable, currentAddress);
-                        y = ea.y;
-                        x = ea.x;
-                        indirect = ea.indirect;
-                    } else {
-                        // No AC, just EA
-                        ParsedEA ea = parseEA(operands.trim(), symbolTable, currentAddress);
-                        y = ea.y;
-                        x = ea.x;
-                        indirect = ea.indirect;
-                    }
-                }
-
-                // Encode instruction: [op:9][ac:4][i:1][x:4][y:18]
-                long word = ((long)opcode << 27) | ((long)ac << 23) |
-                            ((long)indirect << 22) | ((long)x << 18) | (y & 0x3FFFF);
-                memory.write(currentAddress, word);
-                instructions.add(new long[]{currentAddress, word, lineNum+1});
-                currentAddress++;
-                result.wordCount++;
-
-            } catch (Exception e) {
-                result.errors.add(new AssemblyError(lineNum+1, rawLine.trim(), e.getMessage()));
-                currentAddress++; // skip
+            } else if (mn.equals("XWD")) {
+                String[] h = rest.split(",", 2);
+                long l2 = parseNum(h[0].trim(), result.symbols, result);
+                long r  = h.length > 1 ? parseNum(h[1].trim(), result.symbols, result) : 0;
+                memory.write(lc++, ((l2 & 0x3FFFFL) << 18) | (r & 0x3FFFFL));
+                wc++;
+            } else {
+                memory.write(lc++, assemInstr(mn, rest, lc - 1, result));
+                wc++;
             }
         }
-
-        result.startAddress = originAddress;
+        result.wordCount = wc;
         return result;
     }
 
-    private static class ParsedEA {
-        int y, x, indirect;
-        ParsedEA(int y, int x, int indirect) {
-            this.y = y; this.x = x; this.indirect = indirect;
+    // =========================================================================
+    // Instruction encoder
+    // =========================================================================
+
+    private long assemInstr(String mn, String ops, int lc, AssemblyResult r) {
+        if (mn.equals("HALT")) return (long) 0001 << 27; // halt sentinel
+        if (mn.equals("NOP"))  return ((long) 0254 << 27) | (lc & 0x3FFFF);
+
+        Integer op = OPS.get(mn);
+        if (op == null) { r.errors.add(lc + ": unknown op: " + mn); return 0; }
+
+        ops = ops.trim();
+        if (ops.isEmpty()) return (long) op << 27;
+
+        // I/O instructions
+        if (op >= 0700) return encodeIO(op, ops, lc, r);
+
+        int ac = 0, idx = 0, ind = 0;
+        long addr = 0;
+        int comma = findComma(ops);
+        String ea;
+        if (comma >= 0) {
+            ac = (int)(parseNum(ops.substring(0, comma).trim(), r.symbols, r) & 0xF);
+            ea = ops.substring(comma + 1).trim();
+        } else {
+            ea = ops;
         }
+        if (ea.startsWith("@")) { ind = 1; ea = ea.substring(1).trim(); }
+        int po = ea.lastIndexOf('('), pc = ea.lastIndexOf(')');
+        if (po >= 0 && pc > po) {
+            idx = (int)(parseNum(ea.substring(po + 1, pc).trim(), r.symbols, r) & 0xF);
+            ea  = ea.substring(0, po).trim();
+        }
+        if (!ea.isEmpty()) addr = parseNum(ea, r.symbols, r) & 0x3FFFFL;
+
+        return ((long) op << 27) | ((long) ac << 23) | ((long) ind << 22)
+             | ((long) idx << 18) | addr;
     }
 
-    private ParsedEA parseEA(String s, Map<String, Integer> syms, int currentPC) throws Exception {
+    private long encodeIO(int base, String ops, int lc, AssemblyResult r) {
+        String[] p   = ops.split(",", 2);
+        String devStr = p[0].trim().toUpperCase();
+        String rest  = p.length > 1 ? p[1].trim() : "0";
+        Integer dv   = DEVICES.get(devStr);
+        int dev      = dv != null ? dv : (int)(parseNum(devStr, r.symbols, r) & 0177);
+        int func     = base & 07;
+        int ind = 0, idx = 0;
+        long addr = 0;
+        if (rest.startsWith("@")) { ind = 1; rest = rest.substring(1).trim(); }
+        int po = rest.lastIndexOf('('), pc = rest.lastIndexOf(')');
+        if (po >= 0 && pc > po) {
+            idx  = (int)(parseNum(rest.substring(po + 1, pc).trim(), r.symbols, r) & 0xF);
+            rest = rest.substring(0, po).trim();
+        }
+        if (!rest.isEmpty()) addr = parseNum(rest, r.symbols, r) & 0x3FFFFL;
+        int acField = (dev >> 1) & 0xF;
+        long opCode = ((dev << 3) | func | 0700) & 0x1FF;
+        return (opCode << 27) | ((long) acField << 23) | ((long) ind << 22)
+             | ((long) idx << 18) | addr;
+    }
+
+    // =========================================================================
+    // Number parser
+    // =========================================================================
+
+    private int parseNum(String s, Map<String, Integer> syms, AssemblyResult r) {
         s = s.trim();
-        int indirect = 0;
-        int x = 0;
-
-        if (s.startsWith("@")) {
-            indirect = 1;
-            s = s.substring(1).trim();
+        if (s.isEmpty()) return 0;
+        if (Character.isLetter(s.charAt(0))) {
+            String key = s.toUpperCase();
+            if (syms != null && syms.containsKey(key)) return syms.get(key);
+            if (key.equals("CTY")) return 0100;
+            return 0;
         }
-
-        // Check for index: Y(X)
-        int parenOpen = s.indexOf('(');
-        if (parenOpen >= 0) {
-            int parenClose = s.indexOf(')', parenOpen);
-            String xStr = s.substring(parenOpen + 1, parenClose >= 0 ? parenClose : s.length()).trim();
-            x = parseNumber(xStr, syms) & 017;
-            s = s.substring(0, parenOpen).trim();
+        try {
+            if (s.startsWith("0x") || s.startsWith("0X"))
+                return (int)(Long.parseLong(s.substring(2), 16) & 0xFFFFFFFFL);
+            if (s.endsWith("."))
+                return Integer.parseInt(s.substring(0, s.length() - 1), 10);
+            return (int)(Long.parseLong(s, 8) & 0xFFFFFFFFL);
+        } catch (NumberFormatException e) {
+            if (r != null) r.errors.add("Bad number: " + s);
+            return 0;
         }
-
-        // Handle . (current location)
-        s = s.replace(".", String.valueOf(currentPC));
-
-        int y = (int)(parseExpression(s, syms, currentPC) & 0x3FFFF);
-        return new ParsedEA(y, x, indirect);
     }
 
-    private String[] splitLine(String line) {
-        // Split on whitespace but keep operands together
-        int space = -1;
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    private static String stripComment(String line) {
+        boolean inStr = false;
         for (int i = 0; i < line.length(); i++) {
             char c = line.charAt(i);
-            if (c == ' ' || c == '\t') { space = i; break; }
+            if (c == '"' || c == '\'') inStr = !inStr;
+            if (!inStr && c == ';') return line.substring(0, i);
         }
-        if (space < 0) return new String[]{line};
-        String op = line.substring(0, space).trim();
-        String rest = line.substring(space).trim();
-        return new String[]{op, rest};
+        return line;
     }
 
-    private long parseExpression(String s, Map<String, Integer> syms, int currentPC) throws Exception {
-        s = s.trim();
-        if (s.isEmpty()) return 0;
-
-        // Simple arithmetic: +, -, *
-        // Handle + and -
-        for (int i = s.length() - 1; i >= 0; i--) {
+    private static int findComma(String s) {
+        int depth = 0;
+        for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
-            if ((c == '+' || c == '-') && i > 0) {
-                long left  = parseExpression(s.substring(0, i), syms, currentPC);
-                long right = parseExpression(s.substring(i+1), syms, currentPC);
-                return (c == '+') ? left + right : left - right;
-            }
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (c == ',' && depth == 0) return i;
         }
-        return parseNumber(s, syms);
+        return -1;
     }
 
-    private int parseNumber(String s, Map<String, Integer> syms) throws Exception {
-        s = s.trim().toUpperCase();
-        if (s.isEmpty()) return 0;
-
-        // Symbol
-        if (Character.isLetter(s.charAt(0)) || s.charAt(0) == '_') {
-            if (syms.containsKey(s)) return syms.get(s);
-            // Try register names
-            if (s.startsWith("AC") && s.length() <= 4) {
-                try { return Integer.parseInt(s.substring(2)); } catch (Exception ignore) {}
-            }
-            throw new Exception("Undefined symbol: " + s);
-        }
-
-        // Octal (default if starts with 0 or has octal digits only)
-        if (s.startsWith("0") && !s.startsWith("0X") && !s.startsWith("0D")) {
-            return (int)(Long.parseLong(s, 8) & 0xFFFFFFFFL);
-        }
-        if (s.startsWith("0X")) return (int)(Long.parseLong(s.substring(2), 16) & 0xFFFFFFFFL);
-        if (s.startsWith("0D")) return Integer.parseInt(s.substring(2));
-
-        // Decimal or octal heuristic (no 8s or 9s = octal)
-        boolean hasOctalOnly = true;
-        for (char c : s.toCharArray()) {
-            if (c == '8' || c == '9') { hasOctalOnly = false; break; }
-        }
-        if (hasOctalOnly && s.length() > 1) {
-            return (int)(Long.parseLong(s, 8) & 0xFFFFFFFFL);
-        }
-        return Integer.parseInt(s);
-    }
-
-    private String getStringArg(String line) {
+    private static String extractString(String line) {
         int q1 = line.indexOf('"');
         if (q1 >= 0) {
             int q2 = line.indexOf('"', q1 + 1);
-            if (q2 >= 0) return line.substring(q1 + 1, q2);
+            if (q2 > q1) return line.substring(q1 + 1, q2);
         }
         int a1 = line.indexOf('\'');
         if (a1 >= 0) {
             int a2 = line.indexOf('\'', a1 + 1);
-            if (a2 >= 0) return line.substring(a1 + 1, a2);
+            if (a2 > a1) return line.substring(a1 + 1, a2);
         }
         return "";
     }
 
-    /** Pack ASCII string into PDP-10 words (7-bit, 5 chars per word) */
-    private int[] packAscii(String s) {
-        int numWords = (s.length() + 4) / 5;
-        int[] words = new int[numWords];
-        for (int i = 0; i < numWords; i++) {
-            int w = 0;
+    private static int[] packAscii(String s) {
+        int nw = (s.length() + 4) / 5;
+        int[] w = new int[nw];
+        for (int i = 0; i < nw; i++) {
+            int word = 0;
             for (int j = 0; j < 5; j++) {
                 int idx = i * 5 + j;
-                int ch = (idx < s.length()) ? (s.charAt(idx) & 0x7F) : 0;
-                w = (w << 7) | ch;
+                word = (word << 7) | (idx < s.length() ? s.charAt(idx) & 0x7F : 0);
             }
-            // Note: this gives 35 bits; bit 0 (MSB of PDP-10 word) is 0
-            words[i] = w;
+            w[i] = word;
         }
-        return words;
+        return w;
     }
 
-    /**
-     * Returns a sample "Hello World" program in PDP-10 assembly
-     */
+    // =========================================================================
+    // Sample programs  (called by MainActivity)
+    // =========================================================================
+
     public static String getHelloWorldProgram() {
-        return
-            "; PDP-10 Hello World\n" +
-            "; Outputs 'Hello, World!' via console I/O\n" +
-            "; Uses DATAO instruction to write characters\n" +
-            "\n" +
-            "        LOC 200\n" +
-            "\n" +
-            "START:  MOVEI 1,MSG     ; Load address of message into AC1\n" +
-            "LOOP:   LDB   2,[POINT 7,(1),6]  ; Load byte via byte pointer\n" +
-            "        JUMPE 2,DONE    ; Jump if null terminator\n" +
-            "        MOVEI 0,@1      ; Get char to AC0\n" +
-            "        MOVEM 0,OUTBUF  ; Store in output buffer\n" +
-            "        DATAO CTY,OUTBUF ; Output character\n" +
-            "        AOJA  1,LOOP    ; Increment and loop\n" +
-            "DONE:   HALT            ; Stop\n" +
-            "\n" +
-            "MSG:    ASCII \"Hello, World!\" \n" +
-            "OUTBUF: EXP 0\n" +
-            "        END START\n";
+        return "; PDP-10 Hello World\n"
+             + "; Uses OUTCHR to print each character\n"
+             + "        LOC 200\n"
+             + "START:  MOVEI 1,MSG     ; AC1 = address of string\n"
+             + "LOOP:   MOVE  0,@1      ; AC0 = next char (indirect)\n"
+             + "        JUMPE 0,DONE    ; Zero byte = end of string\n"
+             + "        OUTCHR 0,       ; Output char in AC0\n"
+             + "        AOJA  1,LOOP    ; Next char\n"
+             + "DONE:   HALT\n"
+             + "MSG:    ASCII \"Hello, PDP-10!\\n\"\n"
+             + "        EXP 0\n"
+             + "        END START\n";
     }
 
-    /**
-     * Returns a Fibonacci sequence program
-     */
     public static String getFibonacciProgram() {
-        return
-            "; PDP-10 Fibonacci Sequence\n" +
-            "; Computes first N Fibonacci numbers\n" +
-            "; AC0 = current, AC1 = next, AC2 = counter\n" +
-            "\n" +
-            "        LOC 200\n" +
-            "\n" +
-            "START:  MOVEI 0,0       ; F(0) = 0\n" +
-            "        MOVEI 1,1       ; F(1) = 1\n" +
-            "        MOVEI 2,14      ; Count = 14 (octal), 12 iterations\n" +
-            "\n" +
-            "LOOP:   MOVEM 0,RESULT  ; Store current Fibonacci number\n" +
-            "        MOVE  3,1       ; Save F(n+1)\n" +
-            "        ADD   1,0       ; F(n+2) = F(n) + F(n+1)\n" +
-            "        MOVE  0,3       ; F(n) = old F(n+1)\n" +
-            "        SOJE  2,DONE    ; Decrement counter, jump if zero\n" +
-            "        JRST  LOOP      ; Continue\n" +
-            "\n" +
-            "DONE:   HALT            ; Done - result in AC0\n" +
-            "\n" +
-            "RESULT: EXP 0           ; Storage for current value\n" +
-            "        END START\n";
+        return "; PDP-10 Fibonacci\n"
+             + "        LOC 200\n"
+             + "START:  MOVEI 0,0\n"
+             + "        MOVEI 1,1\n"
+             + "        MOVEI 2,14\n"
+             + "LOOP:   MOVEM 0,RESULT\n"
+             + "        MOVE  3,1\n"
+             + "        ADD   1,0\n"
+             + "        MOVE  0,3\n"
+             + "        SOJE  2,DONE\n"
+             + "        JRST  LOOP\n"
+             + "DONE:   HALT\n"
+             + "RESULT: EXP 0\n"
+             + "        END START\n";
     }
 
-    /**
-     * Returns a counter/loop program
-     */
     public static String getCounterProgram() {
-        return
-            "; PDP-10 Counter Demo\n" +
-            "; Counts from 0 to 7 and stores results\n" +
-            "\n" +
-            "        LOC 200\n" +
-            "\n" +
-            "START:  MOVEI 0,0       ; Counter = 0\n" +
-            "        MOVEI 1,TABLE   ; Pointer to table\n" +
-            "\n" +
-            "LOOP:   MOVEM 0,(1)     ; Store counter at (1)\n" +
-            "        ADDI  1,1       ; Increment pointer\n" +
-            "        AOJA  0,LOOP    ; Increment AC0 and loop always\n" +
-            "        CAIGE 0,10      ; Skip if AC0 >= 10 (octal)\n" +
-            "        JRST  LOOP\n" +
-            "\n" +
-            "HALT:   HALT\n" +
-            "\n" +
-            "TABLE:  EXP 0\n" +
-            "        EXP 0\n" +
-            "        EXP 0\n" +
-            "        EXP 0\n" +
-            "        EXP 0\n" +
-            "        EXP 0\n" +
-            "        EXP 0\n" +
-            "        EXP 0\n" +
-            "        END START\n";
+        return "; PDP-10 Counter 0..17\n"
+             + "        LOC 200\n"
+             + "START:  SETZ  0,\n"
+             + "        MOVEI 1,TABLE\n"
+             + "        MOVEI 2,20\n"
+             + "LOOP:   MOVEM 0,@1\n"
+             + "        AOJ   0,\n"
+             + "        CAME  0,2\n"
+             + "        AOJA  1,LOOP\n"
+             + "DONE:   HALT\n"
+             + "TABLE:  EXP 0,0,0,0,0,0,0,0\n"
+             + "        EXP 0,0,0,0,0,0,0,0\n"
+             + "        END START\n";
     }
 }

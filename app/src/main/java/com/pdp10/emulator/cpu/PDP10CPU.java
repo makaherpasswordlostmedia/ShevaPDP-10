@@ -85,17 +85,36 @@ public class PDP10CPU {
 
     public long[] getACs() { return AC.clone(); }
 
+    /**
+     * PDP-10 ARCHITECTURE: AC[0-15] ARE memory locations 0-15.
+     * All memory reads/writes must go through these helpers.
+     */
+    private long readMem(int addr) {
+        addr &= 0x3FFFF;
+        if (addr < 16) return AC[addr];
+        return memory.read(addr);
+    }
+
+    private void writeMem(int addr, long val) {
+        addr &= 0x3FFFF;
+        val &= WORD_MASK;
+        if (addr < 16) AC[addr] = val;
+        else memory.write(addr, val);
+    }
+
+    private static final long MAX_INSTRUCTIONS = 10_000_000L;
+
     public void run() {
         running.set(true);
         halted.set(false);
-        int yieldCounter = 0;
+        long startCount = instructionCount;
         while (running.get() && !halted.get()) {
             step();
-            // Yield every 10000 instructions to keep UI responsive
-            if (++yieldCounter >= 10000) {
-                yieldCounter = 0;
-                Thread.yield();
+            if ((instructionCount - startCount) >= MAX_INSTRUCTIONS) {
+                halt("Instruction limit reached");
+                break;
             }
+            if ((instructionCount & 0x3FFFL) == 0) Thread.yield();
         }
         running.set(false);
     }
@@ -143,7 +162,7 @@ public class PDP10CPU {
         if (x != 0) addr = (addr + (int)(AC[x] & HALF_MASK)) & 0x3FFFF;
         int depth = 0;
         while (i != 0 && depth++ < 64) {
-            long ind = memory.read(addr);
+            long ind = readMem(addr);
             i    = iF(ind);
             x    = xF(ind);
             addr = yF(ind);
@@ -157,7 +176,12 @@ public class PDP10CPU {
     // =========================================================================
 
     private long add(long a, long b) {
-        long result = (a + b) & WORD_MASK;
+        // Ones-complement addition with end-around carry
+        long sum = (a & WORD_MASK) + (b & WORD_MASK);
+        if ((sum & (WORD_MASK + 1)) != 0) {  // carry out of bit 35
+            sum = (sum & WORD_MASK) + 1;      // end-around carry
+        }
+        long result = sum & WORD_MASK;
         boolean aNeg = (a & SIGN_BIT) != 0;
         boolean bNeg = (b & SIGN_BIT) != 0;
         boolean rNeg = (result & SIGN_BIT) != 0;
@@ -278,29 +302,29 @@ public class PDP10CPU {
             break;
 
         // -- MOVE group 200-217 ------------------------------------------------
-        case 0200: AC[ac] = memory.read(ea(w));                    break; // MOVE
+        case 0200: AC[ac] = readMem(ea(w));                    break; // MOVE
         case 0201: AC[ac] = ea(w) & HALF_MASK;                     break; // MOVEI
-        case 0202: memory.write(ea(w), AC[ac]);                    break; // MOVEM
-        case 0203: { long v=memory.read(ea(w)); if(ac!=0)AC[ac]=v; memory.write(ea(w),v); break; } // MOVES
-        case 0204: AC[ac] = swap(memory.read(ea(w)));              break; // MOVS
+        case 0202: writeMem(ea(w), AC[ac]);                    break; // MOVEM
+        case 0203: { long v=readMem(ea(w)); if(ac!=0)AC[ac]=v; writeMem(ea(w),v); break; } // MOVES
+        case 0204: AC[ac] = swap(readMem(ea(w)));              break; // MOVS
         case 0205: AC[ac] = ((long)(ea(w)&HALF_MASK))<<18;        break; // MOVSI
-        case 0206: memory.write(ea(w), swap(AC[ac]));              break; // MOVSM
-        case 0207: { long v=swap(memory.read(ea(w))); if(ac!=0)AC[ac]=v; memory.write(ea(w),v); break; } // MOVSS
-        case 0210: AC[ac] = neg(memory.read(ea(w)));               break; // MOVN
+        case 0206: writeMem(ea(w), swap(AC[ac]));              break; // MOVSM
+        case 0207: { long v=swap(readMem(ea(w))); if(ac!=0)AC[ac]=v; writeMem(ea(w),v); break; } // MOVSS
+        case 0210: AC[ac] = neg(readMem(ea(w)));               break; // MOVN
         case 0211: AC[ac] = neg(ea(w) & HALF_MASK);               break; // MOVNI
-        case 0212: memory.write(ea(w), neg(AC[ac]));               break; // MOVNM
-        case 0213: { long v=neg(memory.read(ea(w))); if(ac!=0)AC[ac]=v; memory.write(ea(w),v); break; } // MOVNS
-        case 0214: { long v=memory.read(ea(w)); AC[ac]=isNeg(v)?neg(v):v; break; } // MOVM
+        case 0212: writeMem(ea(w), neg(AC[ac]));               break; // MOVNM
+        case 0213: { long v=neg(readMem(ea(w))); if(ac!=0)AC[ac]=v; writeMem(ea(w),v); break; } // MOVNS
+        case 0214: { long v=readMem(ea(w)); AC[ac]=isNeg(v)?neg(v):v; break; } // MOVM
         case 0215: { long v=ea(w)&HALF_MASK;   AC[ac]=isNeg(v)?neg(v):v; break; } // MOVMI
-        case 0216: { long v=AC[ac]; memory.write(ea(w), isNeg(v)?neg(v):v); break; } // MOVMM
-        case 0217: { long v=memory.read(ea(w)); v=isNeg(v)?neg(v):v; if(ac!=0)AC[ac]=v; memory.write(ea(w),v); break; } // MOVMS
+        case 0216: { long v=AC[ac]; writeMem(ea(w), isNeg(v)?neg(v):v); break; } // MOVMM
+        case 0217: { long v=readMem(ea(w)); v=isNeg(v)?neg(v):v; if(ac!=0)AC[ac]=v; writeMem(ea(w),v); break; } // MOVMS
 
         // -- Integer arithmetic 220-237 ----------------------------------------
-        case 0220: AC[ac] = imul(AC[ac], memory.read(ea(w)));      break; // IMUL
+        case 0220: AC[ac] = imul(AC[ac], readMem(ea(w)));      break; // IMUL
         case 0221: AC[ac] = imul(AC[ac], ea(w)&HALF_MASK);         break; // IMULI
-        case 0222: memory.write(ea(w), imul(AC[ac], memory.read(ea(w)))); break; // IMULM
-        case 0223: { long r=imul(AC[ac],memory.read(ea(w))); AC[ac]=r; memory.write(ea(w),r); break; } // IMULB
-        case 0230: idiv(ac, AC[ac], memory.read(ea(w)));            break; // IDIV
+        case 0222: writeMem(ea(w), imul(AC[ac], readMem(ea(w)))); break; // IMULM
+        case 0223: { long r=imul(AC[ac],readMem(ea(w))); AC[ac]=r; writeMem(ea(w),r); break; } // IMULB
+        case 0230: idiv(ac, AC[ac], readMem(ea(w)));            break; // IDIV
         case 0231: idiv(ac, AC[ac], ea(w)&HALF_MASK);               break; // IDIVI
 
         // -- Shift group 240-247 -----------------------------------------------
@@ -360,35 +384,35 @@ public class PDP10CPU {
             if ((FLAGS & bits) != 0) { FLAGS &= ~bits; PC = e; }
             break;
         }
-        case 0256: execute(memory.read(ea(w)));                    break;  // XCT
+        case 0256: execute(readMem(ea(w)));                    break;  // XCT
         case 0260: {                                                        // PUSHJ
             int e = ea(w);
             AC[ac] = add(AC[ac], 0x000001000001L);
-            memory.write((int)(AC[ac] & HALF_MASK), (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
+            writeMem((int)(AC[ac] & HALF_MASK), (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
             PC = e;
             break;
         }
         case 0261: {                                                        // PUSH
             int e = ea(w);
             AC[ac] = add(AC[ac], 0x000001000001L);
-            memory.write((int)(AC[ac] & HALF_MASK), memory.read(e));
+            writeMem((int)(AC[ac] & HALF_MASK), readMem(e));
             break;
         }
         case 0262: {                                                        // POP
             int e = ea(w);
-            memory.write(e, memory.read((int)(AC[ac] & HALF_MASK)));
+            writeMem(e, readMem((int)(AC[ac] & HALF_MASK)));
             AC[ac] = sub(AC[ac], 0x000001000001L);
             break;
         }
         case 0263: {                                                        // POPJ
             int src = (int)(AC[ac] & HALF_MASK);
-            PC = (int)(memory.read(src) & HALF_MASK);
+            PC = (int)(readMem(src) & HALF_MASK);
             AC[ac] = sub(AC[ac], 0x000001000001L);
             break;
         }
         case 0264: {                                                        // JSR
             int e = ea(w);
-            memory.write(e, (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
+            writeMem(e, (FLAGS & LEFT_HALF_MASK) | (PC & HALF_MASK));
             PC = (e + 1) & 0x3FFFF;
             break;
         }
@@ -400,26 +424,26 @@ public class PDP10CPU {
         }
         case 0266: {                                                        // JSA
             int e = ea(w);
-            memory.write(e, AC[ac]);
+            writeMem(e, AC[ac]);
             AC[ac] = ((long)e << 18) | (PC & HALF_MASK);
             PC = (e + 1) & 0x3FFFF;
             break;
         }
         case 0267: {                                                        // JRA
             int e = ea(w);
-            AC[ac] = memory.read((int)((AC[ac] >> 18) & HALF_MASK));
+            AC[ac] = readMem((int)((AC[ac] >> 18) & HALF_MASK));
             PC = e;
             break;
         }
 
         // -- ADD / SUB 270-277 -------------------------------------------------
-        case 0270: AC[ac] = add(AC[ac], memory.read(ea(w)));       break;  // ADD
+        case 0270: AC[ac] = add(AC[ac], readMem(ea(w)));       break;  // ADD
         case 0271: AC[ac] = add(AC[ac], ea(w) & HALF_MASK);        break;  // ADDI
-        case 0272: { int e=ea(w); memory.write(e, add(AC[ac], memory.read(e))); break; } // ADDM
+        case 0272: { int e=ea(w); writeMem(e, add(AC[ac], readMem(e))); break; } // ADDM
         case 0273: { int e=ea(w); long r=add(AC[ac],memory.read(e)); AC[ac]=r; memory.write(e,r); break; } // ADDB
-        case 0274: AC[ac] = sub(AC[ac], memory.read(ea(w)));       break;  // SUB
+        case 0274: AC[ac] = sub(AC[ac], readMem(ea(w)));       break;  // SUB
         case 0275: AC[ac] = sub(AC[ac], ea(w) & HALF_MASK);        break;  // SUBI
-        case 0276: { int e=ea(w); memory.write(e, sub(memory.read(e), AC[ac])); break; } // SUBM
+        case 0276: { int e=ea(w); writeMem(e, sub(readMem(e), AC[ac])); break; } // SUBM
         case 0277: { int e=ea(w); long r=sub(AC[ac],memory.read(e)); AC[ac]=r; memory.write(e,r); break; } // SUBB
 
         // -- Compare/Skip 300-337 ----------------------------------------------
@@ -433,7 +457,7 @@ public class PDP10CPU {
         // CAM family (memory compare, 310-317)
         case 0310: case 0311: case 0312: case 0313:
         case 0314: case 0315: case 0316: case 0317: {
-            long diff = sub(AC[ac], memory.read(ea(w)));
+            long diff = sub(AC[ac], readMem(ea(w)));
             if (testCond(op & 7, diff)) PC = (PC + 1) & 0x3FFFF;
             break;
         }
@@ -463,7 +487,7 @@ public class PDP10CPU {
         case 0350: case 0351: case 0352: case 0353:
         case 0354: case 0355: case 0356: case 0357: {                // AOS
             int e = ea(w); long v = add(memory.read(e), 1);
-            memory.write(e, v); if (ac != 0) AC[ac] = v;
+            writeMem(e, v); if (ac != 0) AC[ac] = v;
             if (testCond(op & 7, v)) PC = (PC + 1) & 0x3FFFF;
             break;
         }
@@ -476,7 +500,7 @@ public class PDP10CPU {
         case 0370: case 0371: case 0372: case 0373:
         case 0374: case 0375: case 0376: case 0377: {                // SOS
             int e = ea(w); long v = sub(memory.read(e), 1);
-            memory.write(e, v); if (ac != 0) AC[ac] = v;
+            writeMem(e, v); if (ac != 0) AC[ac] = v;
             if (testCond(op & 7, v)) PC = (PC + 1) & 0x3FFFF;
             break;
         }
@@ -566,7 +590,7 @@ public class PDP10CPU {
 
     private void boolOp(int op, int ac, long w) {
         int  e   = ea(w);
-        long mem = memory.read(e);
+        long mem = readMem(e);
         long a   = AC[ac];
         int  fn  = (op >> 2) & 0xF;
         long result;
@@ -592,8 +616,8 @@ public class PDP10CPU {
         int dest = op & 3;
         switch (dest) {
             case 0: case 1: AC[ac] = result;   break;
-            case 2: memory.write(e, result);   break;
-            case 3: AC[ac] = result; memory.write(e, result); break;
+            case 2: writeMem(e, result);   break;
+            case 3: AC[ac] = result; writeMem(e, result); break;
         }
     }
 
@@ -603,7 +627,7 @@ public class PDP10CPU {
 
     private void halfOp(int op, int ac, long w) {
         int  e   = ea(w);
-        long src = memory.read(e);
+        long src = readMem(e);
         long dst = AC[ac];
         // Bit 8 of opcode: 0=R-to-L, 1=L-to-R (relative to source half)
         // sub-family determined by bits 3-5
@@ -631,7 +655,7 @@ public class PDP10CPU {
             AC[ac] = result;
         } else {
             if (ac != 0) AC[ac] = result;
-            memory.write(e, result);
+            writeMem(e, result);
         }
     }
 
@@ -641,7 +665,7 @@ public class PDP10CPU {
 
     private void testOp(int op, int ac, long w) {
         int  e    = ea(w);
-        long mask = memory.read(e);
+        long mask = readMem(e);
         long val  = AC[ac];
 
         boolean swapped = (op & 020) != 0;

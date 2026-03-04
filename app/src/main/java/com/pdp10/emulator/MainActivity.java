@@ -296,21 +296,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void loadSample(int rawResId, String name) {
-        try {
-            java.io.InputStream is = getResources().openRawResource(rawResId);
-            byte[] buf = new byte[is.available()];
-            is.read(buf);
-            is.close();
-            String source = new String(buf, "UTF-8");
-            EditText ed = findViewById(R.id.editor_input);
-            if (ed != null) ed.setText(source);
-            TabLayout tabs = findViewById(R.id.tab_layout);
-            if (tabs != null) tabs.selectTab(tabs.getTabAt(1));
-            Toast.makeText(this, "Loaded: " + name, Toast.LENGTH_SHORT).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "Failed to load: " + name, Toast.LENGTH_SHORT).show();
-        }
+    private void loadSample(String source, String name) {
+        EditText ed = findViewById(R.id.editor_input);
+        if (ed != null) ed.setText(source);
+        TabLayout tabs = findViewById(R.id.tab_layout);
+        if (tabs != null) tabs.selectTab(tabs.getTabAt(1));
+        Toast.makeText(this, "Loaded: " + name, Toast.LENGTH_SHORT).show();
     }
 
     // =========================================================================

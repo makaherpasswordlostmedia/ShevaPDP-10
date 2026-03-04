@@ -12,6 +12,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
+import android.util.Log;
 import androidx.appcompat.widget.Toolbar;
 
 import com.google.android.material.tabs.TabLayout;
@@ -34,13 +35,13 @@ import java.util.concurrent.Executors;
  */
 public class MainActivity extends AppCompatActivity {
 
-    // ── Emulator subsystems (shared state) ───────────────────────────────────
+    // -- Emulator subsystems (shared state) -----------------------------------
     public static PDP10Memory memory;
     public static PDP10CPU    cpu;
     public static PDP10Assembler assembler;
     public static volatile boolean cpuRunning = false;
 
-    // ── UI ───────────────────────────────────────────────────────────────────
+    // -- UI -------------------------------------------------------------------
     private TerminalView terminalView;
     private TextView     statusBar;
     private Handler      mainHandler;
@@ -54,6 +55,19 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Global crash handler — shows error in dialog instead of silent crash
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            Log.e("PDP10", "CRASH in " + thread.getName(), throwable);
+            String msg = throwable.getClass().getSimpleName() + ": " + throwable.getMessage()
+                       + "\n\nIn: " + (throwable.getStackTrace().length > 0
+                           ? throwable.getStackTrace()[0].toString() : "unknown");
+            mainHandler.post(() -> new AlertDialog.Builder(MainActivity.this)
+                .setTitle("Crash")
+                .setMessage(msg)
+                .setPositiveButton("OK", null)
+                .show());
+        });
 
         mainHandler = new Handler(Looper.getMainLooper());
         cpuExecutor = Executors.newSingleThreadExecutor();
@@ -83,9 +97,9 @@ public class MainActivity extends AppCompatActivity {
         cpu = new PDP10CPU(memory, new PDP10CPU.IOHandler() {
 
             @Override public void writeChar(char c) {
-                if (terminalView != null) {
-                    terminalView.post(() -> terminalView.printChar(c));
-                }
+                // printChar is now thread-safe (synchronized + postInvalidate)
+                // so we can call it directly from the CPU thread
+                if (terminalView != null) terminalView.printChar(c);
             }
 
             @Override public int readChar() {
@@ -153,9 +167,9 @@ public class MainActivity extends AppCompatActivity {
         else if (id == R.id.menu_step)         { stepCPU();  return true; }
         else if (id == R.id.menu_reset)        { confirmReset(); return true; }
         else if (id == R.id.menu_assemble)     { assembleAndLoad(); return true; }
-        else if (id == R.id.menu_load_hello)   { loadSample(PDP10Assembler.getHelloWorldProgram(),  "Hello World"); return true; }
-        else if (id == R.id.menu_load_fib)     { loadSample(PDP10Assembler.getFibonacciProgram(),   "Fibonacci");   return true; }
-        else if (id == R.id.menu_load_counter) { loadSample(PDP10Assembler.getCounterProgram(),     "Counter");     return true; }
+        else if (id == R.id.menu_load_hello)   { loadSampleRaw(R.raw.hello_world,  "Hello World"); return true; }
+        else if (id == R.id.menu_load_fib)     { loadSampleRaw(R.raw.fibonacci,    "Fibonacci");   return true; }
+        else if (id == R.id.menu_load_counter) { loadSampleRaw(R.raw.counter,      "Counter");     return true; }
         return super.onOptionsItemSelected(item);
     }
 
@@ -164,28 +178,28 @@ public class MainActivity extends AppCompatActivity {
     // All must have signature:  public void methodName(View v)
     // =========================================================================
 
-    /** Editor tab — Assemble button */
+    /** Editor tab -- Assemble button */
     public void onAssembleClick(View v) { assembleAndLoad(); }
 
-    /** Editor tab — Run button (assemble then run) */
+    /** Editor tab -- Run button (assemble then run) */
     public void onRunFromEditorClick(View v) {
         assembleAndLoad();
         if (!cpu.isHalted()) runCPU();
     }
 
-    /** Editor tab — Clear button */
+    /** Editor tab -- Clear button */
     public void onClearEditorClick(View v) {
         EditText ed = findViewById(R.id.editor_input);
         if (ed != null) ed.setText("");
     }
 
-    /** Debug tab — Run button */
+    /** Debug tab -- Run button */
     public void onDebugRun(View v)   { runCPU();  }
-    /** Debug tab — Step button */
+    /** Debug tab -- Step button */
     public void onDebugStep(View v)  { stepCPU(); }
-    /** Debug tab — Stop button */
+    /** Debug tab -- Stop button */
     public void onDebugStop(View v)  { stopCPU(); }
-    /** Debug tab — Reset button */
+    /** Debug tab -- Reset button */
     public void onDebugReset(View v) { confirmReset(); }
 
     // =========================================================================
@@ -251,7 +265,7 @@ public class MainActivity extends AppCompatActivity {
         }
         String source = ed.getText().toString().trim();
         if (source.isEmpty()) {
-            Toast.makeText(this, "Editor is empty — load a sample from the menu", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Editor is empty -- load a sample from the menu", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -282,12 +296,21 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void loadSample(String source, String name) {
-        EditText ed = findViewById(R.id.editor_input);
-        if (ed != null) ed.setText(source);
-        TabLayout tabs = findViewById(R.id.tab_layout);
-        if (tabs != null) tabs.selectTab(tabs.getTabAt(1));
-        Toast.makeText(this, "Loaded: " + name, Toast.LENGTH_SHORT).show();
+    private void loadSampleRaw(int rawResId, String name) {
+        try {
+            java.io.InputStream is = getResources().openRawResource(rawResId);
+            byte[] buf = new byte[is.available()];
+            is.read(buf);
+            is.close();
+            String source = new String(buf, "UTF-8");
+            EditText ed = findViewById(R.id.editor_input);
+            if (ed != null) ed.setText(source);
+            TabLayout tabs = findViewById(R.id.tab_layout);
+            if (tabs != null) tabs.selectTab(tabs.getTabAt(1));
+            Toast.makeText(this, "Loaded: " + name, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "Failed to load: " + name, Toast.LENGTH_SHORT).show();
+        }
     }
 
     // =========================================================================
@@ -349,7 +372,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateStatus() {
         if (statusBar == null) return;
-        String state = cpuRunning ? "▶ RUNNING" : (cpu != null && cpu.isHalted() ? "■ HALTED" : "■ STOPPED");
+        String state = cpuRunning ? " RUNNING" : (cpu != null && cpu.isHalted() ? " HALTED" : " STOPPED");
         statusBar.setText(String.format("%s   PC:%06o   #%d",
             state,
             cpu != null ? cpu.getPC() : 0,
@@ -365,11 +388,11 @@ public class MainActivity extends AppCompatActivity {
         if (terminalView == null) return;
         terminalView.clearScreen();
         terminalView.printInfo("=========================================");
-        terminalView.printInfo("  PDP-10 Emulator  —  KA10/KI10");
+        terminalView.printInfo("  PDP-10 Emulator  --  KA10/KI10");
         terminalView.printInfo("  256K Words  |  Android Edition");
         terminalView.printInfo("=========================================");
         terminalView.print("\n");
-        terminalView.printInfo("Menu → Load Program → pick a sample");
+        terminalView.printInfo("Menu -> Load Program -> pick a sample");
         terminalView.printInfo("Switch to EDITOR tab, tap ASSEMBLE");
         terminalView.printInfo("Then tap RUN or use Debug tab to step");
         terminalView.print("\nPDP-10> ");

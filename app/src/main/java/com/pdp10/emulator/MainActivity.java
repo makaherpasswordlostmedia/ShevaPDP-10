@@ -167,9 +167,9 @@ public class MainActivity extends AppCompatActivity {
         else if (id == R.id.menu_step)         { stepCPU();  return true; }
         else if (id == R.id.menu_reset)        { confirmReset(); return true; }
         else if (id == R.id.menu_assemble)     { assembleAndLoad(); return true; }
-        else if (id == R.id.menu_load_hello)   { loadSampleRaw(R.raw.hello_world,  "Hello World"); return true; }
-        else if (id == R.id.menu_load_fib)     { loadSampleRaw(R.raw.fibonacci,    "Fibonacci");   return true; }
-        else if (id == R.id.menu_load_counter) { loadSampleRaw(R.raw.counter,      "Counter");     return true; }
+        else if (id == R.id.menu_load_hello)   { loadSample(PDP10Assembler.getHelloWorldProgram(),  "Hello World"); return true; }
+        else if (id == R.id.menu_load_fib)     { loadSample(PDP10Assembler.getFibonacciProgram(),   "Fibonacci");   return true; }
+        else if (id == R.id.menu_load_counter) { loadSample(PDP10Assembler.getCounterProgram(),     "Counter");     return true; }
         return super.onOptionsItemSelected(item);
     }
 
@@ -296,7 +296,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void loadSampleRaw(int rawResId, String name) {
+    private void loadSample(int rawResId, String name) {
         try {
             java.io.InputStream is = getResources().openRawResource(rawResId);
             byte[] buf = new byte[is.available()];
